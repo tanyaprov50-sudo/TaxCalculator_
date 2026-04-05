@@ -1,0 +1,103 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Виртуальное окружение
+.venv/
+venv/
+ENV/
+env/
+.conda/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Кэш и временные файлы
+.qwen/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+
+# Базы данных (содержат личные данные)
+*.db
+vehicle_fleet.db
+fleet_*.db
+
+# JSON с организациями (личные данные)
+organizations.json
+
+# Кэш налоговых ставок
+tax_config_cache.json
+custom_rates.json
+
+# Логи
+*.log
+*.log.*
+
+# Windows
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Скриншоты и изображения (кроме иконки)
+*.png
+*.jpg
+*.jpeg
+*.gif
+!icon.ico
+
+# Тестовые и отладочные скрипты (не нужны в репозитории)
+debug_*.py
+check_*.py
+test_*.py
+create_test_db.py
+fix_errors.py
+build_now.bat
+simple_test.ps1
+test_*.ps1
+run_test.ps1
+check_shortcuts.ps1
+
+# Временные файлы PowerShell
+*.ps1~
+
+# Отчёты
+BUGFIX_REPORT.md
+
+# PyInstaller специфичные
+build/
+dist/
+*.spec.bak
+
+# macOS
+.DS_Store
+
+# Linux
+*~
+.fuse_hidden*
