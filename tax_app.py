@@ -19,9 +19,38 @@ import re
 import sqlite3
 from contextlib import contextmanager
 
-# ============================================================================
-# МОДУЛЬ 1: БАЗА ДАННЫХ (SQLite)
-# ============================================================================
+def _parse_ru_date(s):
+    """Парсит дату в формате ДД.ММ.ГГГГ или ДД-ММ-ГГГГ в строку ГГГГ-ММ-ДД для БД"""
+    if not s or str(s).strip() == "":
+        return ""
+    s = str(s).strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return s
+    for sep in [".", "-"]:
+        parts = s.split(sep)
+        if len(parts) == 3:
+            try:
+                d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+                dt = datetime(y, m, d)
+                return dt.strftime("%Y-%m-%d")
+            except (ValueError, IndexError):
+                pass
+    return s
+
+
+def _db_date_to_ru(s):
+    """Конвертирует дату из БД (ГГГГ-ММ-ДД) в русский формат (ДД.ММ.ГГГГ)"""
+    if not s or str(s).strip() == "" or str(s).strip() in ("None", "nan"):
+        return ""
+    s = str(s).strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        try:
+            y, m, d = s.split("-")
+            return f"{d}.{m}.{y}"
+        except:
+            return s
+    # Если уже в русском формате — оставляем
+    return s
 
 
 class VehicleDatabase:
@@ -94,8 +123,8 @@ class VehicleDatabase:
             cursor = conn.cursor()
             cursor.execute(
                 """INSERT INTO vehicles
-                (марка, модель, гос_номер, мощность, год_выпуска, тип_тс, vin, инв_номер, дата_постановки, статус, примечание)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (марка, модель, гос_номер, мощность, год_выпуска, тип_тс, vin, инв_номер, дата_постановки, дата_списания, статус, примечание)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data.get("марка", ""),
                     data.get("модель", ""),
@@ -106,6 +135,7 @@ class VehicleDatabase:
                     data.get("vin", ""),
                     data.get("инв_номер", ""),
                     data.get("дата_постановки", datetime.now().strftime("%Y-%m-%d")),
+                    data.get("дата_списания", ""),
                     "active",
                     data.get("примечание", ""),
                 ),
@@ -287,6 +317,16 @@ class VehicleDatabase:
                     инв = ""
                 else:
                     инв = str(инв_val).strip()
+                # Обработка дат: Excel может вернуть datetime
+                def to_date_str(val):
+                    if pd.isna(val) or val is None or str(val).strip() == "":
+                        return ""
+                    if isinstance(val, datetime):
+                        return val.strftime("%Y-%m-%d")
+                    if hasattr(val, 'strftime'):  # pandas Timestamp
+                        return val.strftime("%Y-%m-%d")
+                    return str(val).strip()
+
                 data = {
                     "марка": str(row.get("марка", "")),
                     "модель": str(row.get("модель", "")),
@@ -296,8 +336,8 @@ class VehicleDatabase:
                     "тип_тс": str(row.get("тип_тс", "легковые")),
                     "vin": str(row.get("vin", "")),
                     "инв_номер": инв,
-                    "дата_постановки": str(row.get("дата_постановки", "")),
-                    "дата_списания": str(row.get("дата_списания", "")),
+                    "дата_постановки": to_date_str(row.get("дата_постановки", "")),
+                    "дата_списания": to_date_str(row.get("дата_списания", "")),
                     "примечание": str(row.get("примечание", "")),
                 }
                 self.add_vehicle(data)
@@ -810,10 +850,14 @@ class OrgSelector:
     ORGS_FILE = "organizations.json"
 
     def __init__(self, root=None):
-        # Всегда создаем свой собственный root для диалога
-        self.root = tk.Tk()
-        self.own_root = True
-        self.root.withdraw()  # Скрываем корневое окно
+        # Используем переданный root или создаём свой
+        if root is not None:
+            self.root = root
+            self.own_root = False
+        else:
+            self.root = tk.Tk()
+            self.own_root = True
+            self.root.withdraw()
         self.selected_db = None
         self.selected_org = None
         self.orgs = self._load_orgs()
@@ -1003,7 +1047,7 @@ class TaxApp:
             else f"🚗 {org_name} — Расчёт ТН 2026"
         )
         self.root.title(title)
-        self.root.geometry("1200x750")
+        self.root.state("zoomed")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         try:
@@ -1039,10 +1083,116 @@ class TaxApp:
         self.auto_load_config()
         self.load_vehicles_from_db()
 
+    def _on_close(self):
+        """Обработка закрытия окна"""
+        if messagebox.askokcancel("Выход", "Вы уверены, что хотите выйти?"):
+            self.root.destroy()
+
+    def switch_org(self):
+        """Смена организации"""
+        if messagebox.askyesno("Смена организации", "Сменить организацию? Текущие данные будут закрыты."):
+            self.root.destroy()
+            main()
+
+    def show_tax_history(self):
+        """Показать историю налога для выбранного ТС"""
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Внимание", "Выберите ТС")
+            return
+        vid = self.tree.item(sel[0])["values"][0]
+        vehicle = self.db.get_vehicle_by_id(vid)
+        if not vehicle:
+            return
+        
+        history = self.db.get_tax_history(vid)
+        
+        d = tk.Toplevel(self.root)
+        d.title(f"📊 История: {vehicle.get('гос_номер', '')}")
+        d.geometry("500x350")
+        
+        text = tk.Text(d, wrap="none", font=("Consolas", 10))
+        text.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        if not history:
+            text.insert("end", "История расчётов пуста")
+        else:
+            for h in history:
+                text.insert("end", f"Год {h['год_расчёта']}: Ставка {h['ставка']} руб/л.с. → Налог: {h['сумма_налога']:,.0f} руб.\n")
+
+    def show_year_report(self):
+        """Показать отчёт по годам"""
+        year = 2026
+        d = tk.Toplevel(self.root)
+        d.title(f"📈 Отчёт за {year} год (поквартально)")
+        d.geometry("700x450")
+        
+        t = tk.Text(d, wrap="none", font=("Consolas", 10))
+        t.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        if not self.calculated_results:
+            t.insert("end", "Сначала выполните расчёт налога")
+            return
+        
+        # Группируем по типам ТС
+        by_type = {}
+        for r in self.calculated_results:
+            vtype = r.get("тип_тс", "другие")
+            if vtype not in by_type:
+                by_type[vtype] = {"count": 0, "налог": 0}
+            by_type[vtype]["count"] += 1
+            by_type[vtype]["налог"] += r.get("налог", 0)
+        
+        t.insert("end", f"📊 Отчёт по транспортному налогу за {year} год\n")
+        t.insert("end", "=" * 50 + "\n\n")
+        
+        total_tax = 0
+        total_count = 0
+        for vtype, data in sorted(by_type.items()):
+            t.insert("end", f"🚗 {vtype}:\n")
+            t.insert("end", f"   Количество ТС: {data['count']}\n")
+            t.insert("end", f"   Сумма налога: {data['налог']:,.0f} руб.\n\n")
+            total_tax += data['налог']
+            total_count += data['count']
+        
+        t.insert("end", "=" * 50 + "\n")
+        t.insert("end", f"ИТОГО: {total_count} ТС, {total_tax:,.0f} руб.")
+
+    def show_change_log(self):
+        """Показать журнал изменений"""
+        d = tk.Toplevel(self.root)
+        d.title("📋 Журнал изменений (30 дней)")
+        d.geometry("700x450")
+        
+        t = tk.Text(d, wrap="none", font=("Consolas", 9))
+        t.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        try:
+            from datetime import timedelta
+            date_30_days_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+            changes = self.db.get_changes_since(date_30_days_ago)
+            
+            if not changes:
+                t.insert("end", "Изменений за последние 30 дней нет")
+            else:
+                for c in changes:
+                    t.insert("end", f"{c['created_at']} | {c['действие']} | ТС ID {c['vehicle_id']}\n")
+        except Exception as e:
+            t.insert("end", f"Ошибка: {e}")
+
     def create_ui(self):
+        # Инициализируем переменные для чекбоксов ДО их использования
+        self.show_registration_var = tk.BooleanVar(value=False)
+        self.show_disposal_var = tk.BooleanVar(value=False)
+        self.show_notes_var = tk.BooleanVar(value=False)
+
         # Верхняя панель
-        top = tk.Frame(self.root, bg="#f0f0f0", pady=8)
+        top = tk.Frame(self.root, bg="#f0f0f0", pady=5)
         top.pack(fill="x")
+
+        # Первая строка - кнопки и регион
+        top_row1 = tk.Frame(top, bg="#f0f0f0")
+        top_row1.pack(fill="x", pady=3)
 
         for text, cmd, bg in [
             ("🔄 Ставки", self.update_config, "#e1f5fe"),
@@ -1054,14 +1204,14 @@ class TaxApp:
             ("📤 Экспорт в Excel", self.export_excel, "#f3e5f5"),
         ]:
             tk.Button(
-                top, text=text, command=cmd, bg=bg, relief="flat", padx=8, pady=4
-            ).pack(side="left", padx=3)
+                top_row1, text=text, command=cmd, bg=bg, relief="flat", padx=8, pady=3
+            ).pack(side="left", padx=2)
 
         # Регион
-        tk.Label(top, text="Регион:", bg="#f0f0f0").pack(side="left", padx=(15, 2))
+        tk.Label(top_row1, text="Регион:", bg="#f0f0f0").pack(side="left", padx=(10, 2))
         self.region_var = tk.StringVar(value="Пермский край")
         self.region_cb = ttk.Combobox(
-            top,
+            top_row1,
             textvariable=self.region_var,
             values=[
                 "Пермский край",
@@ -1070,14 +1220,14 @@ class TaxApp:
                 "Свердловская область",
                 "Краснодарский край",
             ],
-            width=20,
+            width=18,
             state="readonly",
         )
-        self.region_cb.pack(side="left", padx=5)
+        self.region_cb.pack(side="left", padx=3)
         self.region_cb.bind("<<ComboboxSelected>>", self.on_region_change)
 
-        self.lbl_status = tk.Label(top, text="⏳ Загрузка...", fg="blue", bg="#f0f0f0")
-        self.lbl_status.pack(side="left", padx=15)
+        self.lbl_status = tk.Label(top_row1, text="⏳ Загрузка...", fg="blue", bg="#f0f0f0", font=("Segoe UI", 8))
+        self.lbl_status.pack(side="left", padx=10)
 
         # Чекбокс авто-определения типа
         self._auto_detect = False
@@ -1086,18 +1236,40 @@ class TaxApp:
             "w", lambda *a: setattr(self, "_auto_detect", self.auto_detect_var.get())
         )
         tk.Checkbutton(
-            top, text="🔍 Авто-тип", variable=self.auto_detect_var, bg="#f0f0f0"
+            top_row1, text="🔍 Авто-тип", variable=self.auto_detect_var, bg="#f0f0f0"
         ).pack(side="left", padx=5)
 
-        # Кнопка смены организации
+        # Вторая строка - чекбоксы для дополнительных колонок
+        top_row2 = tk.Frame(top, bg="#e8e8e8")
+        top_row2.pack(fill="x", pady=2, padx=5)
+
+        tk.Label(top_row2, text=" Показать колонки:", bg="#e8e8e8", fg="#666", font=("Segoe UI", 9, "bold")).pack(side="left", padx=5)
+
+        tk.Checkbutton(
+            top_row2, text="Дата постановки", variable=self.show_registration_var,
+            bg="#e8e8e8", selectcolor="#fff", command=self.filter_vehicles, font=("Segoe UI", 9)
+        ).pack(side="left", padx=3)
+
+        tk.Checkbutton(
+            top_row2, text="Дата списания", variable=self.show_disposal_var,
+            bg="#e8e8e8", selectcolor="#fff", command=self.filter_vehicles, font=("Segoe UI", 9)
+        ).pack(side="left", padx=3)
+
+        tk.Checkbutton(
+            top_row2, text="Примечания", variable=self.show_notes_var,
+            bg="#e8e8e8", selectcolor="#fff", command=self.filter_vehicles, font=("Segoe UI", 9)
+        ).pack(side="left", padx=3)
+
+        # Кнопка смены организации (справа)
         tk.Button(
-            top,
+            top_row2,
             text="🏢 Сменить орг.",
             command=self.switch_org,
             bg="#ede7f6",
             relief="flat",
             padx=8,
-            pady=4,
+            pady=2,
+            font=("Segoe UI", 9)
         ).pack(side="right", padx=5)
         flt = tk.Frame(self.root, bg="#fafafa", pady=4)
         flt.pack(fill="x", padx=10)
@@ -1126,37 +1298,41 @@ class TaxApp:
         # Таблица
         tf = tk.Frame(self.root)
         tf.pack(fill="both", expand=True, padx=10, pady=5)
-        cols = [
+        self.tree_frame = tf  # Сохраняем ссылку на фрейм таблицы
+        
+        # Базовые колонки
+        self.base_cols = [
             ("id", "ID", 40),
             ("инв_номер", "Инв. №", 80),
             ("гос_номер", "Гос. номер", 100),
+            ("vin", "VIN", 100),
             ("марка", "Марка", 120),
             ("модель", "Модель", 120),
             ("мощность", "Л.с.", 60),
             ("год", "Год", 55),
             ("тип_тс", "Тип", 90),
             ("ставка", "Ставка", 70),
-            ("мес", "Мес.", 45),
-            ("налог", "Налог ₽", 90),
+            ("1кв", "1 кв", 70),
+            ("2кв", "2 кв", 70),
+            ("3кв", "3 кв", 70),
+            ("4кв", "4 кв", 70),
+            ("итого", "Итого ₽", 90),
             ("статус", "Статус", 80),
         ]
-        self.tree = ttk.Treeview(
-            tf, columns=[c[0] for c in cols], show="headings", selectmode="extended"
-        )
-        for cid, ctxt, cw in cols:
-            self.tree.heading(cid, text=ctxt)
-            self.tree.column(
-                cid, width=cw, anchor="w" if cid in ("марка", "модель") else "center"
-            )
-        vsb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
-        hsb = ttk.Scrollbar(tf, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        tf.grid_rowconfigure(0, weight=1)
-        tf.grid_columnconfigure(0, weight=1)
-
+        
+        # Дополнительные колонки
+        self.extra_cols = [
+            ("дата_постановки", "Дата пост.", 110),
+            ("дата_списания", "Дата спис.", 110),
+            ("примечание", "Примечание", 150),
+        ]
+        
+        # Создаём tree (пересоздаётся при изменении видимых колонок)
+        self.tree = None
+        self.vsb = None
+        self.hsb = None
+        self._create_tree()
+        
         # Контекстное меню
         self.ctx = tk.Menu(self.root, tearoff=0)
         self.ctx.add_command(label="✏️ Редактировать", command=self.edit_vehicle)
@@ -1167,7 +1343,7 @@ class TaxApp:
         self.tree.bind("<Button-3>", lambda e: self.ctx.post(e.x_root, e.y_root))
         self.tree.bind("<Double-1>", lambda e: self.edit_vehicle())
 
-        # Нижняя панель
+        # Нижняя панель (создаётся один раз)
         bot = tk.Frame(self.root, bg="#f0f0f0", pady=8)
         bot.pack(fill="x")
         self.lbl_summary = tk.Label(
@@ -1183,6 +1359,52 @@ class TaxApp:
         tk.Button(
             bot, text="📋 Журнал изменений", command=self.show_change_log, bg="#e8e8e8"
         ).pack(side="right", padx=5)
+
+    def _create_tree(self):
+        """Создаёт или пересоздаёт дерево с текущими колонками"""
+        # Определяем видимые колонки
+        cols = list(self.base_cols)
+        if self.show_registration_var.get():
+            cols.append(self.extra_cols[0])
+        if self.show_disposal_var.get():
+            cols.append(self.extra_cols[1])
+        if self.show_notes_var.get():
+            cols.append(self.extra_cols[2])
+
+        # Если дерево уже существует - удаляем его
+        if self.tree is not None:
+            self.tree.destroy()
+            if self.vsb is not None:
+                self.vsb.destroy()
+            if self.hsb is not None:
+                self.hsb.destroy()
+            self.hsb = None
+
+        # Используем сохранённый фрейм
+        tf = self.tree_frame
+
+        # Создаём новое дерево
+        self.tree = ttk.Treeview(
+            tf, columns=[c[0] for c in cols], show="headings", selectmode="extended"
+        )
+        for cid, ctxt, cw in cols:
+            self.tree.heading(cid, text=ctxt)
+            self.tree.column(
+                cid, width=cw, anchor="w" if cid in ("марка", "модель", "примечание") else "center",
+                stretch=True
+            )
+
+        self.vsb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
+        self.hsb = None
+        self.tree.configure(yscrollcommand=self.vsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.vsb.grid(row=0, column=1, sticky="ns")
+        tf.grid_rowconfigure(0, weight=1)
+        tf.grid_columnconfigure(0, weight=1)
+
+        # Привязываем контекстное меню к новому дереву
+        self.tree.bind("<Button-3>", lambda e: self.ctx.post(e.x_root, e.y_root))
+        self.tree.bind("<Double-1>", lambda e: self.edit_vehicle())
 
     def auto_load_config(self):
         def thread():
@@ -1599,8 +1821,50 @@ class TaxApp:
         except Exception:
             return 12  # Если дат нет — полный год
 
+    def get_quarter_months(self, vehicle, tax_year=2026):
+        """Возвращает dict с количеством месяцев владения по кварталам: {1: N, 2: N, 3: N, 4: N}"""
+        try:
+            start_str = vehicle.get("дата_постановки", "")
+            end_str = vehicle.get("дата_списания", "")
+
+            year_start = datetime(tax_year, 1, 1)
+            year_end = datetime(tax_year, 12, 31)
+
+            if start_str and str(start_str) not in ("", "None", "nan"):
+                start = datetime.strptime(str(start_str)[:10], "%Y-%m-%d")
+            else:
+                start = year_start
+
+            if end_str and str(end_str) not in ("", "None", "nan"):
+                end = datetime.strptime(str(end_str)[:10], "%Y-%m-%d")
+            else:
+                end = year_end
+
+            start = max(start, year_start)
+            end = min(end, year_end)
+
+            if end < start:
+                return {1: 0, 2: 0, 3: 0, 4: 0}
+
+            # Определяем месяцы владения
+            start_month = start.month
+            end_month = end.month
+
+            # Кварталы: 1кв=(1,2,3), 2кв=(4,5,6), 3кв=(7,8,9), 4кв=(10,11,12)
+            quarter_months = {1: 0, 2: 0, 3: 0, 4: 0}
+            for m in range(start_month, end_month + 1):
+                q = (m - 1) // 3 + 1
+                quarter_months[q] += 1
+
+            return quarter_months
+        except Exception:
+            return {1: 3, 2: 3, 3: 3, 4: 3}
+
     def get_rate_for_vehicle(self, vehicle):
         hp = vehicle.get("мощность", 0)
+        if not hp:
+            return 0
+        hp = float(hp)
         vtype = vehicle.get("тип_тс", "легковые")
         year = vehicle.get("год_выпуска", 0)
 
@@ -1608,23 +1872,41 @@ class TaxApp:
         custom_table = self.custom_rates.get(vtype, {})
         if custom_table:
             for (low, high), rate in custom_table.items():
-                if low < hp <= high or (low == 0 and hp <= high):
+                if (low == 0 and hp <= high) or (low < hp <= high):
                     return rate
 
-        # Если пользовательских ставок нет, используем загруженные ставки
+        # Проверяем ставки по возрасту (для легковых)
         rate_table = None
-        if vtype == "легковые" and year and int(year) > 0:
-            age = 2026 - int(year)
-            for (af, at), tbl in self.config_loader.rates_by_age.items():
-                if af < age <= at or (af == 0 and age <= at):
-                    rate_table = tbl
-                    break
+        if vtype == "легковые" and year:
+            try:
+                age = 2026 - int(year)
+                rates_by_age = getattr(self.config_loader, "rates_by_age", {})
+                if rates_by_age:
+                    for (af, at), tbl in rates_by_age.items():
+                        if af == 0:
+                            if age <= at:
+                                rate_table = tbl
+                                break
+                        elif af < age <= at:
+                            rate_table = tbl
+                            break
+            except:
+                pass
+
+        # Если не нашли по возрасту — берём обычную таблицу
         if rate_table is None:
             rate_table = self.rates.get(vtype, {})
+
+        # Ищем ставку в таблице
         for (low, high), rate in rate_table.items():
-            if low < hp <= high or (low == 0 and hp <= high):
+            if (low == 0 and hp <= high) or (low < hp <= high):
                 return rate
-        return max(rate_table.values()) if rate_table and rate_table.values() else 50
+
+        # Fallback: берём первую ставку из таблицы
+        if rate_table:
+            return next(iter(rate_table.values()))
+
+        return 0
 
     def show_vehicles_table(self, vehicles):
         for item in self.tree.get_children():
@@ -1633,28 +1915,91 @@ class TaxApp:
         year = 2026
         for v in vehicles:
             rate = self.get_rate_for_vehicle(v)
-            months = self.get_ownership_months(v)
-            coeff = months / 12
-            tax = v["мощность"] * rate * coeff
-            # Автоматически сохраняем расчет в базу данных
-            self.db.save_tax_calculation(v["id"], year, rate, tax)
+            quarter_months = self.get_quarter_months(v, year)
+            total_months = sum(quarter_months.values())
+
+            # Нормализуем дату списания из БД (может быть datetime-объектом)
+            disposal_date = v.get("дата_списания", "")
+            if isinstance(disposal_date, datetime):
+                disposal_date = disposal_date.strftime("%Y-%m-%d")
+            elif disposal_date:
+                disposal_date = str(disposal_date).strip()
+            status = v.get("статус", "active")
+
+            is_disposed = status == "disposed" or bool(disposal_date)
+
+            # Расчёт налога по кварталам с округлением
+            quarter_taxes = {}
+            for q, m_count in quarter_months.items():
+                quarter_taxes[q] = round(v["мощность"] * rate * m_count / 12)
+
+            # Если ТС списано — обнуляем кварталы после списания
+            if is_disposed and disposal_date:
+                try:
+                    disp = datetime.strptime(str(disposal_date)[:10], "%Y-%m-%d")
+                    disp_quarter = (disp.month - 1) // 3 + 1
+                    for q in range(disp_quarter + 1, 5):
+                        quarter_taxes[q] = 0
+                except:
+                    pass
+
+            # Итого
+            total_tax = sum(quarter_taxes.values())
+
+            # Сохраняем расчёт в БД
+            self.db.save_tax_calculation(v["id"], year, rate, total_tax)
+
+            # Форматирование с пробелом вместо запятой
+            def fmt(val):
+                if val == 0 and is_disposed:
+                    return "—"
+                return f"{val:,}".replace(",", " ")
+
+            # Форматируем даты для отображения
+            reg_date = v.get("дата_постановки", "")
+            if reg_date:
+                reg_date = _db_date_to_ru(reg_date)
+            else:
+                reg_date = ""
+                
+            disp_date = v.get("дата_списания", "")
+            if disp_date:
+                disp_date = _db_date_to_ru(disp_date)
+            else:
+                disp_date = ""
+
+            # Базовые значения
+            values = [
+                v["id"],
+                v.get("инв_номер", ""),
+                v.get("гос_номер", ""),
+                v.get("vin", ""),
+                v.get("марка", ""),
+                v.get("модель", ""),
+                v["мощность"],
+                v.get("год_выпуска", ""),
+                v.get("тип_тс", ""),
+                rate,
+                fmt(quarter_taxes[1]),
+                fmt(quarter_taxes[2]),
+                fmt(quarter_taxes[3]),
+                fmt(quarter_taxes[4]),
+                fmt(total_tax),
+                "списан" if is_disposed else "актив",
+            ]
+            
+            # Добавляем дополнительные колонки если они включены
+            if self.show_registration_var.get():
+                values.append(reg_date)
+            if self.show_disposal_var.get():
+                values.append(disp_date)
+            if self.show_notes_var.get():
+                values.append(v.get("примечание", ""))
+
             self.tree.insert(
                 "",
                 "end",
-                values=[
-                    v["id"],
-                    v.get("инв_номер", ""),
-                    v.get("гос_номер", ""),
-                    v.get("марка", ""),
-                    v.get("модель", ""),
-                    v["мощность"],
-                    v.get("год_выпуска", ""),
-                    v.get("тип_тс", ""),
-                    rate,
-                    months,
-                    f"{tax:,.2f}",
-                    v.get("статус", "active"),
-                ],
+                values=values,
             )
             self.calculated_results.append(
                 {
@@ -1667,15 +2012,25 @@ class TaxApp:
                     "год_выпуска": v.get("год_выпуска", ""),
                     "тип_тс": v.get("тип_тс", ""),
                     "ставка": rate,
-                    "месяцев": months,
-                    "коэффициент": coeff,
-                    "налог": tax,
+                    "месяцев_1кв": quarter_months[1],
+                    "месяцев_2кв": quarter_months[2],
+                    "месяцев_3кв": quarter_months[3],
+                    "месяцев_4кв": quarter_months[4],
+                    "налог_1кв": quarter_taxes[1],
+                    "налог_2кв": quarter_taxes[2],
+                    "налог_3кв": quarter_taxes[3],
+                    "налог_4кв": quarter_taxes[4],
+                    "налог": total_tax,
                     "год": year,
+                    "статус": "списан" if is_disposed else "актив",
                 }
             )
         self.update_summary()
 
     def filter_vehicles(self):
+        # Пересоздаём дерево с текущими настройками колонок
+        self._create_tree()
+        
         s = self.search_var.get().lower()
         vt = self.type_filter.get()
         filtered = [
@@ -1693,13 +2048,33 @@ class TaxApp:
 
     def update_summary(self):
         total = len(self.current_vehicles)
-        total_tax = sum(
-            v["мощность"]
-            * self.get_rate_for_vehicle(v)
-            * self.get_ownership_months(v)
-            / 12
-            for v in self.current_vehicles
-        )
+        total_tax = 0
+        for v in self.current_vehicles:
+            rate = self.get_rate_for_vehicle(v)
+            quarter_months = self.get_quarter_months(v)
+
+            # Нормализуем дату списания
+            disposal_date = v.get("дата_списания", "")
+            if isinstance(disposal_date, datetime):
+                disposal_date = disposal_date.strftime("%Y-%m-%d")
+            elif disposal_date:
+                disposal_date = str(disposal_date).strip()
+            is_disposed = v.get("статус") == "disposed" or bool(disposal_date)
+
+            quarter_taxes = {}
+            for q, m_count in quarter_months.items():
+                quarter_taxes[q] = round(v["мощность"] * rate * m_count / 12)
+
+            if is_disposed and disposal_date:
+                try:
+                    disp = datetime.strptime(str(disposal_date)[:10], "%Y-%m-%d")
+                    disp_quarter = (disp.month - 1) // 3 + 1
+                    for q in range(disp_quarter + 1, 5):
+                        quarter_taxes[q] = 0
+                except:
+                    pass
+
+            total_tax += sum(quarter_taxes.values())
         self.lbl_summary.config(
             text=f"📊 Всего: {total} ТС | Налог: {total_tax:,.0f} ₽"
         )
@@ -1707,9 +2082,10 @@ class TaxApp:
     def _vehicle_dialog(self, title, initial=None):
         dialog = tk.Toplevel(self.root)
         dialog.title(title)
-        dialog.geometry("480x420")
+        dialog.geometry("1200x900")
         dialog.transient(self.root)
         dialog.grab_set()
+        dialog.resizable(False, False)
         fields = [
             ("гос_номер", "Гос. номер"),
             ("марка", "Марка"),
@@ -1718,15 +2094,15 @@ class TaxApp:
             ("год_выпуска", "Год выпуска *"),
             ("тип_тс", "Тип ТС"),
             ("инв_номер", "Инвентарный номер"),
-            ("дата_постановки", "Дата постановки (ГГГГ-ММ-ДД)"),
-            ("дата_списания", "Дата списания (ГГГГ-ММ-ДД)"),
+            ("дата_постановки", "Дата постановки (ДД.ММ.ГГГГ)"),
+            ("дата_списания", "Дата списания (ДД.ММ.ГГГГ)"),
             ("vin", "VIN"),
             ("примечание", "Примечание"),
         ]
         entries = {}
         for i, (key, label) in enumerate(fields):
-            tk.Label(dialog, text=label).grid(
-                row=i, column=0, sticky="e", padx=10, pady=4
+            tk.Label(dialog, text=label, font=("Segoe UI", 10)).grid(
+                row=i, column=0, sticky="e", padx=10, pady=8
             )
             if key == "тип_тс":
                 entries[key] = ttk.Combobox(
@@ -1738,17 +2114,20 @@ class TaxApp:
                         "мотоциклы",
                         "спецтехника",
                     ],
-                    width=28,
+                    width=55,
                     state="readonly",
                 )
                 entries[key].set(
                     initial.get(key, "легковые") if initial else "легковые"
                 )
             else:
-                entries[key] = ttk.Entry(dialog, width=30)
+                entries[key] = ttk.Entry(dialog, width=55)
                 default = initial.get(key, "") if initial else ""
+                # Даты из БД конвертируем в ДД.ММ.ГГГГ
+                if key in ("дата_постановки", "дата_списания") and default:
+                    default = _db_date_to_ru(default)
                 entries[key].insert(0, str(default) if default else "")
-            entries[key].grid(row=i, column=1, padx=10, pady=4)
+            entries[key].grid(row=i, column=1, padx=10, pady=8)
         return dialog, entries, len(fields)
 
     def add_vehicle_dialog(self):
@@ -1764,6 +2143,9 @@ class TaxApp:
                     )
                     for k, v in entries.items()
                 }
+                # Парсим даты в русском формате
+                data["дата_постановки"] = _parse_ru_date(data.get("дата_постановки", ""))
+                data["дата_списания"] = _parse_ru_date(data.get("дата_списания", ""))
                 if not data["мощность"] or not data["год_выпуска"]:
                     raise ValueError(
                         "Заполните обязательные поля: Мощность и Год выпуска"
@@ -1780,8 +2162,8 @@ class TaxApp:
             except Exception as e:
                 messagebox.showerror("Ошибка", str(e))
 
-        tk.Button(dialog, text="💾 Сохранить", command=save, bg="#e8f5e9").grid(
-            row=nf, column=0, columnspan=2, pady=15
+        tk.Button(dialog, text="💾 Сохранить", command=save, bg="#e8f5e9", font=("Segoe UI", 11), padx=20, pady=8).grid(
+            row=nf, column=0, columnspan=2, pady=25
         )
 
     def edit_vehicle(self):
@@ -1805,6 +2187,8 @@ class TaxApp:
                     )
                     for k, v in entries.items()
                 }
+                data["дата_постановки"] = _parse_ru_date(data.get("дата_постановки", ""))
+                data["дата_списания"] = _parse_ru_date(data.get("дата_списания", ""))
                 self.db.update_vehicle(vid, data)
                 self.load_vehicles_from_db()
                 dialog.destroy()
@@ -1812,8 +2196,8 @@ class TaxApp:
             except Exception as e:
                 messagebox.showerror("Ошибка", str(e))
 
-        tk.Button(dialog, text="💾 Сохранить", command=save, bg="#e8f5e9").grid(
-            row=nf, column=0, columnspan=2, pady=15
+        tk.Button(dialog, text="💾 Сохранить", command=save, bg="#e8f5e9", font=("Segoe UI", 11), padx=20, pady=8).grid(
+            row=nf, column=0, columnspan=2, pady=25
         )
 
     def dispose_vehicle(self):
@@ -1842,10 +2226,34 @@ class TaxApp:
         year = 2026
         for v in self.current_vehicles:
             rate = self.get_rate_for_vehicle(v)
-            months = self.get_ownership_months(v, year)
-            coeff = months / 12
-            tax = v["мощность"] * rate * months / 12
-            self.db.save_tax_calculation(v["id"], year, rate, tax)
+            quarter_months = self.get_quarter_months(v, year)
+
+            # Нормализуем дату списания
+            disposal_date = v.get("дата_списания", "")
+            if isinstance(disposal_date, datetime):
+                disposal_date = disposal_date.strftime("%Y-%m-%d")
+            elif disposal_date:
+                disposal_date = str(disposal_date).strip()
+            status = v.get("статус", "active")
+            is_disposed = status == "disposed" or bool(disposal_date)
+
+            # Расчёт налога по кварталам с округлением
+            quarter_taxes = {}
+            for q, m_count in quarter_months.items():
+                quarter_taxes[q] = round(v["мощность"] * rate * m_count / 12)
+
+            # Обнуляем кварталы после списания
+            if is_disposed and disposal_date:
+                try:
+                    disp = datetime.strptime(str(disposal_date)[:10], "%Y-%m-%d")
+                    disp_quarter = (disp.month - 1) // 3 + 1
+                    for q in range(disp_quarter + 1, 5):
+                        quarter_taxes[q] = 0
+                except:
+                    pass
+
+            total_tax = sum(quarter_taxes.values())
+            self.db.save_tax_calculation(v["id"], year, rate, total_tax)
             self.calculated_results.append(
                 {
                     "vehicle_id": v["id"],
@@ -1857,10 +2265,17 @@ class TaxApp:
                     "год_выпуска": v.get("год_выпуска", ""),
                     "тип_тс": v.get("тип_тс", ""),
                     "ставка": rate,
-                    "месяцев": months,
-                    "коэффициент": coeff,
-                    "налог": tax,
+                    "месяцев_1кв": quarter_months[1],
+                    "месяцев_2кв": quarter_months[2],
+                    "месяцев_3кв": quarter_months[3],
+                    "месяцев_4кв": quarter_months[4],
+                    "налог_1кв": quarter_taxes[1],
+                    "налог_2кв": quarter_taxes[2],
+                    "налог_3кв": quarter_taxes[3],
+                    "налог_4кв": quarter_taxes[4],
+                    "налог": total_tax,
                     "год": year,
+                    "статус": "списан" if is_disposed else "актив",
                 }
             )
         self.show_vehicles_table(self.current_vehicles)
@@ -1903,6 +2318,20 @@ class TaxApp:
             messagebox.showinfo("Импорт", msg)
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
+
+    def export_excel(self):
+        """Экспорт данных в Excel"""
+        fp = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            initialfile=f"Автопарк_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            filetypes=[("Excel", "*.xlsx")],
+        )
+        if fp:
+            try:
+                self.db.export_to_excel(fp)
+                messagebox.showinfo("Успех", f"Экспорт завершён:\n{fp}")
+            except Exception as e:
+                messagebox.showerror("Ошибка", str(e))
 
     def _column_mapping_dialog(self, file_cols):
         """Диалог сопоставления колонок файла с полями базы"""
@@ -1985,164 +2414,58 @@ class TaxApp:
         return result["mapping"]
 
     def _guess_column(self, field_key, file_cols):
-        """Пытается угадать колонку по ключевым словам"""
-        hints = {
-            "мощность": ["мощ", "л.с", "лс", "hp", "л/с", "сил"],
-            "год_выпуска": ["год", "year", "выпуск"],
-            "марка": ["марк", "brand", "наименован", "назван"],
-            "модель": ["модел", "model"],
-            "гос_номер": ["гос", "номер", "рег", "number", "plate"],
-            "инв_номер": ["инв", "inv", "инвентар"],
-            "тип_тс": ["тип", "type", "категор"],
-            "vin": ["vin", "вин"],
-            "дата_постановки": ["постановк", "принят", "начал", "регистр"],
-            "дата_списания": ["списан", "снят", "выбыт", "конец"],
-            "примечание": ["примеч", "коммент", "note"],
+        """Угадывает колонку по названию поля"""
+        field_key = field_key.lower()
+        # Частые варианты названий колонок
+        synonyms = {
+            "мощность": ["мощн", "л.с.", "лс", "hp", "power", "сила"],
+            "год_выпуска": ["год", "выпуск", "year", "г/в"],
+            "марка": ["марка", "make", "brand", "производитель"],
+            "модель": ["модель", "model"],
+            "гос_номер": ["гос", "номер", "reg", "регистр", "state"],
+            "инв_номер": ["инв", "инвентар", "inventory"],
+            "тип_тс": ["тип", "тс", "type", "vehicle"],
+            "vin": ["vin", "иин", "frame"],
+            "дата_постановки": ["постановк", "регистр", "date_in"],
+            "дата_списания": ["списан", "выбыт", "date_out"],
+            "примечание": ["примеч", "заметк", "note", "comment"],
         }
-        kws = hints.get(field_key, [])
         for col in file_cols:
-            col_l = str(col).lower()
-            if any(kw in col_l for kw in kws):
-                return str(col)
+            col_lower = str(col).lower().strip()
+            # Прямое совпадение
+            if field_key in col_lower or col_lower in field_key:
+                return col
+            # По синонимам
+            if field_key in synonyms:
+                for syn in synonyms[field_key]:
+                    if syn in col_lower:
+                        return col
         return None
 
-    def export_excel(self):
-        fp = filedialog.asksaveasfilename(
-            defaultextension=".xlsx",
-            initialfile=f"Автопарк_{datetime.now().strftime('%Y%m%d')}.xlsx",
-        )
-        if not fp:
-            return
-        # Лист 1 — вся база с последним расчётом
-        self.db.export_to_excel(fp)
-        # Лист 2 — текущий расчёт если есть
-        if self.calculated_results:
-            with pd.ExcelWriter(
-                fp, engine="openpyxl", mode="a", if_sheet_exists="replace"
-            ) as writer:
-                pd.DataFrame(self.calculated_results).to_excel(
-                    writer, index=False, sheet_name="Расчёт_налога"
-                )
-        messagebox.showinfo("Успех", f"Экспортировано: {fp}")
 
-    def show_tax_history(self):
-        sel = self.tree.selection()
-        if not sel:
-            return
-        vid = self.tree.item(sel[0])["values"][0]
-        vehicle = self.db.get_vehicle_by_id(vid)
-        history = self.db.get_tax_history(vid)
-        d = tk.Toplevel(self.root)
-        d.title(f"📊 История: {vehicle.get('гос_номер', '')}")
-        d.geometry("500x350")
-        t = tk.Text(d, wrap="none", font=("Consolas", 10))
-        t.pack(fill="both", expand=True, padx=10, pady=10)
-        if history:
-            lines = [f"{'Год':<8} {'Ставка':<10} {'Сумма':>12}", "=" * 32]
-            for h in history:
-                lines.append(
-                    f"{h['год_расчёта']:<8} {h['ставка']:<10} {h['сумма_налога']:>10,.0f} ₽"
-                )
-            t.insert("1.0", "\n".join(lines))
-        else:
-            t.insert("1.0", "История отсутствует")
-        t.config(state="disabled")
-        tk.Button(d, text="Закрыть", command=d.destroy).pack(pady=5)
-
-    def show_year_report(self):
-        year = 2026
-        # Если есть текущие расчеты, используем их, иначе берем из базы
-        if self.calculated_results:
-            # Группируем по типу ТС
-            summary = {}
-            for r in self.calculated_results:
-                vtype = r["тип_тс"]
-                if vtype not in summary:
-                    summary[vtype] = {
-                        "количество": 0,
-                        "общая_сумма": 0,
-                        "средняя_сумма": 0,
-                    }
-                summary[vtype]["количество"] += 1
-                summary[vtype]["общая_сумма"] += r["налог"]
-
-            # Рассчитываем средние
-            for vtype, data in summary.items():
-                if data["количество"] > 0:
-                    data["средняя_сумма"] = data["общая_сумма"] / data["количество"]
-
-            summary = [{"тип_тс": k, **v} for k, v in summary.items()]
-        else:
-            summary = self.db.get_year_summary(year)
-
-        d = tk.Toplevel(self.root)
-        d.title(f"📈 Отчёт за {year} год")
-        d.geometry("500x350")
-        t = tk.Text(d, wrap="none", font=("Consolas", 10))
-        t.pack(fill="both", expand=True, padx=10, pady=10)
-        lines = [f"ТРАНСПОРТНЫЙ НАЛОГ {year}", "=" * 50]
-        total_tax, total_count = 0, 0
-        for row in summary:
-            lines.append(
-                f"{row['тип_тс']:<15} {row['количество']:>5} ТС  {row['общая_сумма']:>12,.0f} ₽"
-            )
-            total_tax += row["общая_сумма"]
-            total_count += row["количество"]
-        lines += ["=" * 50, f"ИТОГО: {total_count} ТС | {total_tax:,.0f} ₽"]
-        t.insert("1.0", "\n".join(lines))
-        t.config(state="disabled")
-        tk.Button(d, text="Закрыть", command=d.destroy).pack(pady=5)
-
-    def show_change_log(self):
-        d = tk.Toplevel(self.root)
-        d.title("📋 Журнал изменений (30 дней)")
-        d.geometry("700x450")
-        t = tk.Text(d, wrap="none", font=("Consolas", 9))
-        t.pack(fill="both", expand=True, padx=10, pady=10)
-        since = (datetime.now() - timedelta(days=30)).isoformat()
-        changes = self.db.get_changes_since(since)
-        if changes:
-            for ch in changes:
-                t.insert(
-                    "end",
-                    f"{ch['created_at'][:19]} | {ch['действие']:<10} | ТС #{ch['vehicle_id']}\n",
-                )
-        else:
-            t.insert("1.0", "Изменений за последние 30 дней нет")
-        t.config(state="disabled")
-        tk.Button(d, text="Закрыть", command=d.destroy).pack(pady=5)
-
-    def _on_close(self):
-        """Обработчик закрытия главного окна"""
-        self.root.destroy()
-        # Завершаем программу
-        import sys
-
-        sys.exit(0)
-
-    def switch_org(self):
-        """Перезапуск с выбором другой организации"""
-        if messagebox.askyesno(
-            "Сменить организацию",
-            "Открыть другую организацию?\nТекущее окно закроется.",
-        ):
-            self.root.destroy()
-            main()
-
+# ============================================================================
+# ЗАПУСК ПРИЛОЖЕНИЯ
+# ============================================================================
 
 def main():
-    selector = OrgSelector()
-
-    if not selector.selected_org:
-        return
-
-    app_root = tk.Tk()
-    # Принудительно показываем окно
-    app_root.update()
-    app_root.deiconify()
+    root = tk.Tk()
+    root.withdraw()  # Скрываем главное окно
     
-    app = TaxApp(app_root, org_name=selector.selected_org, db_file=selector.selected_db)
-    app_root.mainloop()
+    # Показываем диалог выбора организации
+    selector = OrgSelector(root)
+    
+    # Если организация не выбрана - выходим
+    if not selector.selected_org:
+        root.destroy()
+        return
+    
+    # Показываем главное окно
+    root.deiconify()
+    
+    # Создаём приложение
+    app = TaxApp(root, selector.selected_org, selector.selected_db)
+    
+    root.mainloop()
 
 
 if __name__ == "__main__":

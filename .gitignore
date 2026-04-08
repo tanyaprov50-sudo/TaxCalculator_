@@ -74,11 +74,14 @@ $RECYCLE.BIN/
 
 # Тестовые и отладочные скрипты (не нужны в репозитории)
 debug_*.py
+debug_*.txt
 check_*.py
 test_*.py
-create_test_db.py
+test_*.xlsx
+create_test_*.py
 fix_errors.py
 build_now.bat
+build_log.txt
 simple_test.ps1
 test_*.ps1
 run_test.ps1
