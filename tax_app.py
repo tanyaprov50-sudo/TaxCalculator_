@@ -1928,10 +1928,18 @@ class TaxApp:
 
             is_disposed = status == "disposed" or bool(disposal_date)
 
-            # Расчёт налога по кварталам с округлением
-            quarter_taxes = {}
-            for q, m_count in quarter_months.items():
-                quarter_taxes[q] = round(v["мощность"] * rate * m_count / 12)
+            # Расчёт налога: сначала точная итоговая сумма, потом распределение по кварталам
+            total_months = sum(quarter_months.values())
+            total_tax = round(v["мощность"] * rate * total_months / 12)
+
+            power = v["мощность"]
+            raw = {q: power * rate * m / 12 for q, m in quarter_months.items()}
+            floored = {q: int(raw[q]) for q in raw}
+            remainders = sorted(raw.keys(), key=lambda q: -(raw[q] - floored[q]))
+            diff = total_tax - sum(floored.values())
+            quarter_taxes = dict(floored)
+            for i in range(diff):
+                quarter_taxes[remainders[i]] += 1
 
             # Если ТС списано — обнуляем кварталы после списания
             if is_disposed and disposal_date:
@@ -1943,7 +1951,7 @@ class TaxApp:
                 except:
                     pass
 
-            # Итого
+            # Пересчитываем итого после обнуления кварталов
             total_tax = sum(quarter_taxes.values())
 
             # Сохраняем расчёт в БД
@@ -2237,10 +2245,18 @@ class TaxApp:
             status = v.get("статус", "active")
             is_disposed = status == "disposed" or bool(disposal_date)
 
-            # Расчёт налога по кварталам с округлением
-            quarter_taxes = {}
-            for q, m_count in quarter_months.items():
-                quarter_taxes[q] = round(v["мощность"] * rate * m_count / 12)
+            # Расчёт налога: сначала точная итоговая сумма, потом распределение по кварталам
+            total_months = sum(quarter_months.values())
+            total_tax = round(v["мощность"] * rate * total_months / 12)
+
+            power = v["мощность"]
+            raw = {q: power * rate * m / 12 for q, m in quarter_months.items()}
+            floored = {q: int(raw[q]) for q in raw}
+            remainders = sorted(raw.keys(), key=lambda q: -(raw[q] - floored[q]))
+            diff = total_tax - sum(floored.values())
+            quarter_taxes = dict(floored)
+            for i in range(diff):
+                quarter_taxes[remainders[i]] += 1
 
             # Обнуляем кварталы после списания
             if is_disposed and disposal_date:
