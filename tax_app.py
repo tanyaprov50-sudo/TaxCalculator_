@@ -1118,7 +1118,7 @@ class TaxApp:
             text.insert("end", "История расчётов пуста")
         else:
             for h in history:
-                text.insert("end", f"Год {h['год_расчёта']}: Ставка {h['ставка']} руб/л.с. → Налог: {h['сумма_налога']:,.0f} руб.\n")
+                text.insert("end", f"Год {h['год_расчёта']}: Ставка {h['ставка']} руб/л.с. → Налог: {h['сумма_налога']:,.0f} руб.\n".replace(",", " "))
 
     def show_year_report(self):
         """Показать отчёт по годам"""
@@ -1151,12 +1151,12 @@ class TaxApp:
         for vtype, data in sorted(by_type.items()):
             t.insert("end", f"🚗 {vtype}:\n")
             t.insert("end", f"   Количество ТС: {data['count']}\n")
-            t.insert("end", f"   Сумма налога: {data['налог']:,.0f} руб.\n\n")
+            t.insert("end", f"   Сумма налога: {data['налог']:,.0f} руб.\n\n".replace(",", " "))
             total_tax += data['налог']
             total_count += data['count']
         
         t.insert("end", "=" * 50 + "\n")
-        t.insert("end", f"ИТОГО: {total_count} ТС, {total_tax:,.0f} руб.")
+        t.insert("end", f"ИТОГО: {total_count} ТС; {total_tax:,.0f} руб.".replace(",", " "))
 
     def show_change_log(self):
         """Показать журнал изменений"""
@@ -2084,7 +2084,7 @@ class TaxApp:
 
             total_tax += sum(quarter_taxes.values())
         self.lbl_summary.config(
-            text=f"📊 Всего: {total} ТС | Налог: {total_tax:,.0f} ₽"
+            text=f"📊 Всего: {total} ТС | Налог: {total_tax:,.0f} ₽".replace(",", " ")
         )
 
     def _vehicle_dialog(self, title, initial=None):
@@ -2298,7 +2298,7 @@ class TaxApp:
         total = sum(r["налог"] for r in self.calculated_results)
         messagebox.showinfo(
             "Расчёт завершён",
-            f"✅ Рассчитано: {len(self.calculated_results)} ТС\n💰 Итого: {total:,.0f} ₽",
+            f"✅ Рассчитано: {len(self.calculated_results)} ТС\n💰 Итого: {total:,.0f} ₽".replace(",", " "),
         )
 
     def save_calculation(self):
