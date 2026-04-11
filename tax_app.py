@@ -2069,9 +2069,17 @@ class TaxApp:
                 disposal_date = str(disposal_date).strip()
             is_disposed = v.get("статус") == "disposed" or bool(disposal_date)
 
-            quarter_taxes = {}
-            for q, m_count in quarter_months.items():
-                quarter_taxes[q] = round(v["мощность"] * rate * m_count / 12)
+            total_months = sum(quarter_months.values())
+            tax_total = round(v["мощность"] * rate * total_months / 12)
+
+            power = v["мощность"]
+            raw = {q: power * rate * m / 12 for q, m in quarter_months.items()}
+            floored = {q: int(raw[q]) for q in raw}
+            remainders = sorted(raw.keys(), key=lambda q: -(raw[q] - floored[q]))
+            diff = tax_total - sum(floored.values())
+            quarter_taxes = dict(floored)
+            for i in range(diff):
+                quarter_taxes[remainders[i]] += 1
 
             if is_disposed and disposal_date:
                 try:
