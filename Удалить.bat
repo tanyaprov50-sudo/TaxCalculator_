@@ -2,9 +2,12 @@
 chcp 65001 > nul
 
 title Удаление Калькулятора Транспортного Налога
+
 echo.
-echo Удаление Калькулятора Транспортного Налога
-echo =========================================
+echo ========================================
+echo   УДАЛЕНИЕ
+echo   Калькулятор Транспортного Налога
+echo ========================================
 echo.
 
 :: Проверяем права администратора
@@ -37,33 +40,37 @@ for /f "tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVe
     set "INSTALL_DIR=%%~b"
 )
 
-:: Если не найден в реестре - ищем на всех дисках
-if not defined INSTALL_DIR (
-    echo Поиск на всех дисках...
-    for %%d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-        if exist "%%d:\КалькуляторТН\tax_app.exe" set "INSTALL_DIR=%%d:\КалькуляторТН"
-    )
+if defined INSTALL_DIR (
+    echo [OK] Найден в реестре: %INSTALL_DIR%
+    goto :verify_path
 )
 
-:: Если всё ещё не найден - ищем в Program Files
-if not defined INSTALL_DIR (
-    for %%d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-        if exist "%%d:\Program Files\КалькуляторТН\tax_app.exe" set "INSTALL_DIR=%%d:\Program Files\КалькуляторТН"
-        if exist "%%d:\Program Files (x86)\КалькуляторТН\tax_app.exe" set "INSTALL_DIR=%%d:\Program Files (x86)\КалькуляторТН"
+echo [INFO] Не найден в реестре, поиск на дисках...
+
+:: Ищем на всех дисках
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist "%%d:\КалькуляторТН\tax_app.exe" (
+        set "INSTALL_DIR=%%d:\КалькуляторТН"
+        goto :found_path
     )
 )
 
 :: Если не найден - спрашиваем пользователя
+echo.
+echo [ERROR] Программа не найдена автоматически.
+echo.
+set /p "INSTALL_DIR=Введите путь к папке с программой: "
 if not defined INSTALL_DIR (
-    echo [WARN] Программа не найдена автоматически.
-    echo.
-    set /p "INSTALL_DIR=Введите путь к папке с программой: "
-    if not defined INSTALL_DIR (
-        echo [ERROR] Путь не указан
-        pause
-        exit /b 1
-    )
+    echo [ERROR] Путь не указан
+    pause
+    exit /b 1
 )
+goto :verify_path
+
+:found_path
+echo [OK] Найден на диске: %INSTALL_DIR%
+
+:verify_path
 
 :: Проверяем что это правильная папка
 if not exist "%INSTALL_DIR%\tax_app.exe" (
@@ -108,7 +115,14 @@ echo [OK] Ярлыки удалены
 echo.
 echo Очистка реестра...
 reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TaxCalculator" /f >nul 2>&1
-echo [OK] Реестр очищен
+if %errorLevel% equ 0 (
+    echo [OK] Реестр очищен
+) else (
+    echo [WARN] Не удалось очистить реестр (возможно, нужны права администратора)
+)
+
+:: Пробуем также удалить из HKCU на всякий случай
+reg delete "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TaxCalculator" /f >nul 2>&1
 
 echo.
 echo ========================================

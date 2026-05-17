@@ -5,7 +5,7 @@ AppPublisher=TaxCalculator
 AppPublisherURL=
 DefaultDirName={autopf}\TaxCalculator
 DefaultGroupName=Калькулятор Транспортного Налога
-UninstallDisplayIcon={app}\nalog_im.exe
+UninstallDisplayIcon={app}\tax_app.exe
 Compression=lzma2
 SolidCompression=yes
 OutputBaseFilename=Setup_Калькулятор_ТН
@@ -29,16 +29,17 @@ Name: "quicklaunchicon"; Description: "Создать ярлык в панели
 Name: "startmenuicon"; Description: "Создать ярлык в меню Пуск"; GroupDescription: "Дополнительные ярлыки:"; Flags: checkablealone
 
 [Files]
-Source: "dist_nuitka\tax_app.dist\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\tax_app.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Калькулятор Транспортного Налога"; Filename: "{app}\nalog_im.exe"; WorkingDir: "{app}"
+Name: "{group}\Калькулятор Транспортного Налога"; Filename: "{app}\tax_app.exe"; WorkingDir: "{app}"
 Name: "{group}\{cm:UninstallProgram,Калькулятор Транспортного Налога}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Калькулятор ТН"; Filename: "{app}\nalog_im.exe"; WorkingDir: "{app}"; Tasks: desktopicon
-Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\Калькулятор ТН"; Filename: "{app}\nalog_im.exe"; WorkingDir: "{app}"; Tasks: quicklaunchicon
+Name: "{autodesktop}\Калькулятор ТН"; Filename: "{app}\tax_app.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\Калькулятор ТН"; Filename: "{app}\tax_app.exe"; WorkingDir: "{app}"; Tasks: quicklaunchicon
 
 [Run]
-Filename: "{app}\nalog_im.exe"; Description: "Запустить Калькулятор Транспортного Налога"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\tax_app.exe"; Description: "Запустить Калькулятор Транспортного Налога"; Flags: nowait postinstall skipifsilent
 
 [Code]
 procedure InitializeWizard;

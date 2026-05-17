@@ -183,40 +183,17 @@ try {
 
     # Copy files
     Write-Host "Copying application files..." -ForegroundColor Cyan
-    $sourceDir = "$PSScriptRoot\dist\tax_app.dist"
+    $sourceExe = "$PSScriptRoot\dist\tax_app.exe"
 
-    if (-not (Test-Path $sourceDir)) {
-        throw "Application folder not found: $sourceDir"
+    if (-not (Test-Path $sourceExe)) {
+        throw "Application executable not found: $sourceExe"
     }
 
-    # Copy application files
-    if ($updateMode) {
-        Write-Host "Updating application files..." -ForegroundColor Cyan
-        try {
-            # In update mode, copy with error handling for locked files
-            Get-ChildItem -Path $sourceDir -Recurse | ForEach-Object {
-                $destPath = $_.FullName.Replace($sourceDir, $InstallPath)
-                $destDir = Split-Path $destPath -Parent
-                if (-not (Test-Path $destDir)) {
-                    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-                }
-                try {
-                    Copy-Item -Path $_.FullName -Destination $destPath -Force -ErrorAction Stop
-                } catch {
-                    Write-Host "Warning: Could not update $($_.Name)" -ForegroundColor Yellow
-                }
-            }
-            Write-Host "Application files updated" -ForegroundColor Green
-        } catch {
-            Write-Host "Warning: Update completed with errors: $($_.Exception.Message)" -ForegroundColor Yellow
-        }
-    } else {
-        try {
-            Copy-Item -Path "$sourceDir\*" -Destination $InstallPath -Recurse -Force -ErrorAction Stop
-            Write-Host "Application files copied" -ForegroundColor Green
-        } catch {
-            Write-Host "Warning: Some files could not be copied: $($_.Exception.Message)" -ForegroundColor Yellow
-        }
+    try {
+        Copy-Item -Path $sourceExe -Destination (Join-Path $InstallPath "tax_app.exe") -Force -ErrorAction Stop
+        Write-Host "Application executable copied" -ForegroundColor Green
+    } catch {
+        throw "Could not copy application executable: $($_.Exception.Message)"
     }
 
     # Copy icon file
@@ -226,6 +203,15 @@ try {
             Write-Host "Icon file copied" -ForegroundColor Green
         } catch {
             Write-Host "Warning: Could not copy icon file" -ForegroundColor Yellow
+        }
+    }
+
+    if (Test-Path "$PSScriptRoot\uninstall.ps1") {
+        try {
+            Copy-Item -Path "$PSScriptRoot\uninstall.ps1" -Destination $InstallPath -Force
+            Write-Host "Uninstaller copied" -ForegroundColor Green
+        } catch {
+            Write-Host "Warning: Could not copy uninstaller" -ForegroundColor Yellow
         }
     }
 
