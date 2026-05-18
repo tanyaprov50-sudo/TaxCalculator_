@@ -1,6 +1,6 @@
 [Setup]
 AppName=Калькулятор Транспортного Налога
-AppVersion=1.0
+AppVersion=2.0
 AppPublisher=TaxCalculator
 AppPublisherURL=
 DefaultDirName={autopf}\TaxCalculator

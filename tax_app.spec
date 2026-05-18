@@ -1,6 +1,4 @@
 # -*- mode: python ; coding: utf-8 -*-
-import sys
-import os
 
 block_cipher = None
 
@@ -21,9 +19,8 @@ a = Analysis(
         'pandas',
         'requests',
         'bs4',
-        'beautifulsoup4',
         'openpyxl',
-        'python_dateutil',
+        'dateutil',
     ],
     hookspath=[],
     hooksconfig={},

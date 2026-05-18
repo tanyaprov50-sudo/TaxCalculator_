@@ -16,18 +16,17 @@
 
 ### Вариант 2: Собрать из исходников
 ```bash
-# Клонировать репозиторий
-git clone https://github.com/your-username/tax-calculator.git
-cd tax-calculator
+# Перейти в папку проекта
+cd TaxCalculator
 
 # Установить зависимости
 pip install -r requirements.txt
 
 # Собрать exe
-pyinstaller --clean tax_app.spec
+python -m PyInstaller --clean tax_app.spec
 
 # Запустить
-dist/tax_app.exe
+dist\tax_app.exe
 ```
 
 ## 🎯 Возможности
@@ -44,7 +43,7 @@ dist/tax_app.exe
 | ✏️ **Редактирование ставок** | Ручная настройка налоговых ставок |
 | 🖥️ **Полноэкранный режим** | Окно разворачивается на весь экран автоматически |
 
-## � Структура проекта
+## Структура проекта
 
 ```
 tax-calculator/
@@ -56,8 +55,7 @@ tax-calculator/
 ├── 📄 CHANGELOG.md            # История изменений
 ├── 📄 LICENSE                 # Лицензия MIT
 ├── 📄 Установить.bat          # Установщик для Windows
-├── 📄 Удалить.bat             # Деинсталлятор
-├── 📄 Сброс_и_запуск.bat      # Сброс и запуск
+├── 📄 Удалить.bat             # BAT-деинсталлятор
 ├── 📄 install.ps1             # PowerShell установщик
 ├── 📄 uninstall.ps1           # PowerShell деинсталлятор
 ├── 📄 installer_setup.iss     # Скрипт Inno Setup
@@ -65,7 +63,7 @@ tax-calculator/
 └── 📁 dist/                   # Готовый exe (игнорируется в git)
 ```
 
-## � Технологии
+## Технологии
 
 - **Python 3.12** — язык программирования
 - **Tkinter** — графический интерфейс
@@ -74,7 +72,7 @@ tax-calculator/
 - **PyInstaller** — сборка в exe
 - **Requests + BeautifulSoup** — загрузка ставок с сайта
 
-## � Системные требования
+## Системные требования
 
 | Параметр | Требование |
 |----------|------------|
@@ -83,7 +81,7 @@ tax-calculator/
 | Место на диске | ~150 МБ |
 | Python | Не требуется (встроен в exe) |
 
-## ️ Сборка
+## Сборка
 
 ### Автоматическая (GitHub Actions)
 При создании тега `v*` автоматически собирается exe и создаётся релиз.
@@ -94,12 +92,12 @@ tax-calculator/
 pip install -r requirements.txt
 
 # Собрать
-pyinstaller --clean tax_app.spec
+python -m PyInstaller --clean tax_app.spec
 
 # Готовый файл: dist/tax_app.exe
 ```
 
-## � Формула расчёта
+## Формула расчёта
 
 ```
 Налог = Мощность (л.с.) × Ставка (руб/л.с.) × (Месяцы владения / 12)
@@ -115,7 +113,7 @@ pyinstaller --clean tax_app.spec
 
 См. [CONTRIBUTING.md](CONTRIBUTING.md)
 
-## � Лицензия
+## Лицензия
 
 MIT License — см. [LICENSE](LICENSE)
 

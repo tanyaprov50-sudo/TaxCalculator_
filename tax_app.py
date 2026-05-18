@@ -47,11 +47,9 @@ def _db_date_to_ru(s):
         try:
             y, m, d = s.split("-")
             return f"{d}.{m}.{y}"
-        except:
+        except (ValueError, IndexError):
             return s
-    # Если уже в русском формате — оставляем
     return s
-
 
 class VehicleDatabase:
     """Управление базой данных транспортных средств"""
@@ -149,10 +147,9 @@ class VehicleDatabase:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM vehicles WHERE id = ?", (vehicle_id,))
             old_data = dict(cursor.fetchone())
-            set_clause = (
-                ", ".join([f"{k} = ?" for k in data.keys()])
-                + ", updated_at = CURRENT_TIMESTAMP"
-            )
+            # Безопасное построение SET-части через параметризованный запрос
+            set_columns = list(data.keys())
+            set_clause = ", ".join([f"{k} = ?" for k in set_columns]) + ", updated_at = CURRENT_TIMESTAMP"
             values = list(data.values()) + [vehicle_id]
             cursor.execute(f"UPDATE vehicles SET {set_clause} WHERE id = ?", values)
             self._log_change(conn, vehicle_id, "update", str(old_data), str(data))
@@ -416,6 +413,32 @@ class DataNormalizer:
         try:
             s = str(value).replace(",", ".").strip().lower()
             # Определяем единицу измерения
+            is_kwt = "квт" in s or "kw" in s
+            # Убираем единицы измерения
+            s = re.sub(r"[^\d.]", "", s)
+            hp = float(s)
+            if hp <= 0 or hp >= 3000:
+                return None
+            # Переводим кВт в л.с.
+            if is_kwt:
+                hp = round(hp * 1.3596, 2)
+            return hp
+        except (ValueError, AttributeError):
+            return None
+            # Переводим кВт в л.с.
+            if is_kwt:
+                hp = round(hp * 1.3596, 2)
+            return hp
+        except (ValueError, AttributeError):
+            return None
+            # Переводим кВт в л.с.
+            if is_kwt:
+                hp = round(hp * 1.3596, 2)
+            return hp
+        except (ValueError, AttributeError):
+            return None
+            s = str(value).replace(",", ".").strip().lower()
+            # Определяем единицу измерения
             is_kwt = "квт" in s or "kw" in s or "квт" in s
             # Убираем единицы измерения
             s = re.sub(r"[^\d.]", "", s)
@@ -426,7 +449,21 @@ class DataNormalizer:
             if is_kwt:
                 hp = round(hp * 1.3596, 2)
             return hp
-        except:
+        except (ValueError, AttributeError):
+            return None
+            s = str(value).replace(",", ".").strip().lower()
+            # Определяем единицу измерения
+            is_kwt = "квт" in s or "kw" in s or "квт" in s
+            # Убираем единицы измерения
+            s = re.sub(r"[^\d.]", "", s)
+            hp = float(s)
+            if hp <= 0 or hp >= 3000:
+                return None
+            # Переводим кВт в л.с.
+            if is_kwt:
+                hp = round(hp * 1.3596, 2)
+            return hp
+        except (ValueError, AttributeError):
             return None
 
     @staticmethod
@@ -434,7 +471,7 @@ class DataNormalizer:
         try:
             year = int(float(str(value).replace(",", ".").strip()))
             return year if 1900 <= year <= datetime.now().year + 1 else None
-        except:
+        except (ValueError, AttributeError):
             return None
 
     def normalize_dataframe(self, df):
@@ -494,7 +531,7 @@ class AutoConfigLoader:
                 self.last_update = data.get("timestamp")
                 self.source_name = data.get("source", "Кэш")
                 return bool(self.rates)
-        except:
+        except (OSError, json.JSONDecodeError, KeyError):
             return False
 
     def _convert_rate_keys(self, rates_dict):
@@ -513,8 +550,7 @@ class AutoConfigLoader:
                     max_str = parts[1].strip()
                     max_val = float("inf") if max_str == "inf" or "1000000" in max_str else int(max_str)
                     result[vtype][(min_val, max_val)] = rate
-                except:
-                    # Если не удалось преобразовать, пропускаем
+                except (ValueError, KeyError, TypeError):
                     continue
         return result
 
@@ -549,7 +585,7 @@ class AutoConfigLoader:
     def _is_cache_fresh(self):
         try:
             return (datetime.now() - datetime.fromisoformat(self.last_update)).days < 30
-        except:
+        except (ValueError, TypeError, AttributeError):
             return False
 
     def _fetch_from_web(self, region="Пермский край"):
@@ -566,7 +602,7 @@ class AutoConfigLoader:
                     self.source_name = f"tcnalog.ru ({region})"
                     self.last_update = datetime.now().isoformat()
                     return True, f"Обновлено с сайта: {region}"
-        except Exception:
+        except (requests.RequestException, ValueError):
             pass
         return False, f"Не удалось загрузить ставки для: {region}"
 
@@ -599,7 +635,7 @@ class AutoConfigLoader:
                         rate = int("".join(filter(str.isdigit, cols[-1].text.strip())))
                         if rate > 0:
                             type_rates[(low, high)] = rate
-                    except:
+                    except (ValueError, IndexError):
                         continue
             if type_rates:
                 rates[vtype] = type_rates
@@ -897,7 +933,7 @@ class OrgSelector:
             else:  # Обычный Python
                 base = os.path.dirname(os.path.abspath(__file__))
             dialog.iconbitmap(os.path.join(base, "icon.ico"))
-        except:
+        except Exception:
             pass
 
         tk.Label(
@@ -971,7 +1007,7 @@ class OrgSelector:
         if self.own_root and self.root:
             try:
                 self.root.destroy()
-            except:
+            except Exception:
                 pass
 
     def _select(self, dialog):
@@ -1065,8 +1101,8 @@ class TaxApp:
             pass
 
         # В сводном режиме — несколько БД, иначе одна
-        if self.is_summary and isinstance(db_file, list):
-            self.db = VehicleDatabase(db_file[0]) if db_file else VehicleDatabase()
+        if self.is_summary and isinstance(db_file, list) and db_file:
+            self.db = VehicleDatabase(db_file[0])
             self.all_dbs = [VehicleDatabase(f) for f in db_file]
         else:
             self.db = VehicleDatabase(db_file)
@@ -1118,7 +1154,7 @@ class TaxApp:
             text.insert("end", "История расчётов пуста")
         else:
             for h in history:
-                text.insert("end", f"Год {h['год_расчёта']}: Ставка {h['ставка']} руб/л.с. → Налог: {h['сумма_налога']:,.0f} руб.\n".replace(",", " "))
+                text.insert("end", f"Год {h['год_расчёта']}: Ставка {h['ставка']} руб/л.с. → Налог: {h['сумма_налога']:,} руб.\n")
 
     def show_year_report(self):
         """Показать отчёт по годам"""
@@ -1413,7 +1449,7 @@ class TaxApp:
                 force_update=False, region=region
             )
             self.rates = self.config_loader.rates
-            if not self.config_loader.rates_by_age:
+            if not getattr(self.config_loader, "rates_by_age", None):
                 self.config_loader._load_fallback_rates(region)
                 self.rates = self.config_loader.rates
 
@@ -1439,7 +1475,7 @@ class TaxApp:
                 force_update=True, region=region
             )
             self.rates = self.config_loader.rates
-            if not self.config_loader.rates_by_age:
+            if not hasattr(self.config_loader, "rates_by_age") or not self.config_loader.rates_by_age:
                 self.config_loader._load_fallback_rates(region)
                 self.rates = self.config_loader.rates
 
@@ -1472,7 +1508,7 @@ class TaxApp:
                 force_update=True, region=region
             )
             self.rates = self.config_loader.rates
-            if not self.config_loader.rates_by_age:
+            if not hasattr(self.config_loader, "rates_by_age") or not self.config_loader.rates_by_age:
                 self.config_loader._load_fallback_rates(region)
                 self.rates = self.config_loader.rates
 
@@ -1510,7 +1546,7 @@ class TaxApp:
         custom_rates = self._load_custom_rates(custom_rates_file)
 
         # Функция для создания вкладки с типом ТС
-        def create_vehicle_type_tab(vehicle_type, display_name):
+        def create_vehicle_type_tab(vehicle_type, display_name, rates_dict):
             frame = ttk.Frame(notebook)
             notebook.add(frame, text=display_name)
 
@@ -1524,7 +1560,7 @@ class TaxApp:
             tree.column("ставка", width=150)
 
             # Получаем ставки для этого типа ТС
-            rates = custom_rates.get(vehicle_type, self.rates.get(vehicle_type, {}))
+            rates = rates_dict.get(vehicle_type, self.rates.get(vehicle_type, {}))
 
             # Заполняем таблицу
             for (low, high), rate in sorted(rates.items()):
@@ -1571,7 +1607,7 @@ class TaxApp:
                         max_p = int(max_power.get())
                         rate = float(rate_entry.get())
 
-                        if max_p == 0:
+                        if max_p == 0 or max_p == "0":
                             max_p = float("inf")
 
                         if vehicle_type not in custom_rates:
@@ -1689,7 +1725,7 @@ class TaxApp:
         ]
 
         for vtype, display_name in vehicle_types:
-            create_vehicle_type_tab(vtype, display_name)
+            create_vehicle_type_tab(vtype, display_name, custom_rates)
 
         # Кнопки внизу диалога
         btn_frame = ttk.Frame(dialog)
@@ -1752,7 +1788,7 @@ class TaxApp:
                                 key_tuple = key
                             result[vtype][key_tuple] = rate
                     return result
-            except Exception as e:
+            except (OSError, json.JSONDecodeError, ValueError) as e:
                 print(f"Error loading custom rates: {e}")
         return {}
 
@@ -1818,7 +1854,7 @@ class TaxApp:
             # Считаем полные месяцы (правило НК РФ: месяц постановки/снятия считается полным)
             months = (end.year - start.year) * 12 + end.month - start.month + 1
             return min(months, 12)
-        except Exception:
+        except (ValueError, KeyError, TypeError):
             return 12  # Если дат нет — полный год
 
     def get_quarter_months(self, vehicle, tax_year=2026):
@@ -1857,7 +1893,7 @@ class TaxApp:
                 quarter_months[q] += 1
 
             return quarter_months
-        except Exception:
+        except (ValueError, KeyError, TypeError):
             return {1: 3, 2: 3, 3: 3, 4: 3}
 
     def get_rate_for_vehicle(self, vehicle):
@@ -1890,7 +1926,7 @@ class TaxApp:
                         elif af < age <= at:
                             rate_table = tbl
                             break
-            except:
+            except (ValueError, TypeError):
                 pass
 
         # Если не нашли по возрасту — берём обычную таблицу
@@ -1916,7 +1952,6 @@ class TaxApp:
         for v in vehicles:
             rate = self.get_rate_for_vehicle(v)
             quarter_months = self.get_quarter_months(v, year)
-            total_months = sum(quarter_months.values())
 
             # Нормализуем дату списания из БД (может быть datetime-объектом)
             disposal_date = v.get("дата_списания", "")
@@ -1948,7 +1983,7 @@ class TaxApp:
                     disp_quarter = (disp.month - 1) // 3 + 1
                     for q in range(disp_quarter + 1, 5):
                         quarter_taxes[q] = 0
-                except:
+                except (ValueError, TypeError):
                     pass
 
             # Пересчитываем итого после обнуления кварталов
@@ -2059,7 +2094,7 @@ class TaxApp:
         total_tax = 0
         for v in self.current_vehicles:
             rate = self.get_rate_for_vehicle(v)
-            quarter_months = self.get_quarter_months(v)
+            quarter_months = self.get_quarter_months(v, 2026)
 
             # Нормализуем дату списания
             disposal_date = v.get("дата_списания", "")
@@ -2087,7 +2122,7 @@ class TaxApp:
                     disp_quarter = (disp.month - 1) // 3 + 1
                     for q in range(disp_quarter + 1, 5):
                         quarter_taxes[q] = 0
-                except:
+                except (ValueError, TypeError):
                     pass
 
             total_tax += sum(quarter_taxes.values())
@@ -2273,7 +2308,7 @@ class TaxApp:
                     disp_quarter = (disp.month - 1) // 3 + 1
                     for q in range(disp_quarter + 1, 5):
                         quarter_taxes[q] = 0
-                except:
+                except (ValueError, TypeError):
                     pass
 
             total_tax = sum(quarter_taxes.values())

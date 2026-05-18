@@ -265,7 +265,7 @@ try {
             $registryPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TaxCalculator"
             New-Item -Path $registryPath -Force | Out-Null
             Set-ItemProperty -Path $registryPath -Name "DisplayName" -Value "Tax Calculator"
-            Set-ItemProperty -Path $registryPath -Name "DisplayVersion" -Value "1.0"
+            Set-ItemProperty -Path $registryPath -Name "DisplayVersion" -Value "2.0"
             Set-ItemProperty -Path $registryPath -Name "InstallLocation" -Value $InstallPath
             Set-ItemProperty -Path $registryPath -Name "UninstallString" -Value "powershell.exe -File `"$InstallPath\uninstall.ps1`""
             Set-ItemProperty -Path $registryPath -Name "Publisher" -Value "TaxCalculator"
@@ -280,7 +280,7 @@ try {
 [Uninstall]
 InstallPath=$InstallPath
 InstallDate=$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-Version=1.0
+Version=2.0
 "@
     $uninstallFile = Join-Path $InstallPath "uninstall.ini"
     try {

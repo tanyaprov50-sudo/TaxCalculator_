@@ -130,7 +130,7 @@ reg add "%REG_KEY%" /v "DisplayName" /t REG_SZ /d "Калькулятор Тра
 if %errorLevel% neq 0 (
     echo [WARN] Не удалось записать DisplayName в реестр
 )
-reg add "%REG_KEY%" /v "DisplayVersion" /t REG_SZ /d "1.0" /f >nul 2>&1
+reg add "%REG_KEY%" /v "DisplayVersion" /t REG_SZ /d "2.0" /f >nul 2>&1
 reg add "%REG_KEY%" /v "Publisher" /t REG_SZ /d "TaxCalculator" /f >nul 2>&1
 reg add "%REG_KEY%" /v "InstallLocation" /t REG_SZ /d "%INSTALL_DIR%" /f >nul 2>&1
 reg add "%REG_KEY%" /v "UninstallString" /t REG_SZ /d "\"%INSTALL_DIR%\Удалить.bat\"" /f >nul 2>&1
