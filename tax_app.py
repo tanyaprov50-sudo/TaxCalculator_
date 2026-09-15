@@ -65,6 +65,72 @@ def _db_date_to_ru(s):
             return s
     return s
 
+def _attach_entry_clipboard(widget):
+    """Добавляет надёжные Копировать/Вставить/Вырезать/Выделить всё
+    для поля ввода: работает при любой раскладке (по коду клавиши) и по правому клику."""
+    def do_copy(_=None):
+        try:
+            if widget.selection_present():
+                widget.clipboard_clear()
+                widget.clipboard_append(widget.selection_get())
+        except tk.TclError:
+            pass
+
+    def do_cut(_=None):
+        try:
+            if widget.selection_present():
+                widget.clipboard_clear()
+                widget.clipboard_append(widget.selection_get())
+                widget.delete("sel.first", "sel.last")
+        except tk.TclError:
+            pass
+
+    def do_paste(_=None):
+        try:
+            text = widget.clipboard_get()
+        except tk.TclError:
+            return
+        try:
+            if widget.selection_present():
+                widget.delete("sel.first", "sel.last")
+        except tk.TclError:
+            pass
+        widget.insert("insert", text)
+
+    def do_select_all(_=None):
+        try:
+            widget.selection_range(0, "end")
+            widget.icursor("end")
+        except tk.TclError:
+            pass
+
+    # VK-коды Windows: V=86, C=67, X=88, A=65 — не зависят от раскладки
+    def on_ctrl_key(event):
+        codes = {86: do_paste, 67: do_copy, 88: do_cut, 65: do_select_all}
+        action = codes.get(event.keycode)
+        if action:
+            action()
+            return "break"
+
+    widget.bind("<Control-KeyPress>", on_ctrl_key, add="+")
+
+    menu = tk.Menu(widget, tearoff=0)
+    menu.add_command(label="Вырезать", command=do_cut)
+    menu.add_command(label="Копировать", command=do_copy)
+    menu.add_command(label="Вставить", command=do_paste)
+    menu.add_separator()
+    menu.add_command(label="Выделить всё", command=do_select_all)
+
+    def show_menu(event):
+        widget.focus_set()
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    widget.bind("<Button-3>", show_menu, add="+")
+
+
 class VehicleDatabase:
     """Управление базой данных транспортных средств"""
 
@@ -1326,7 +1392,9 @@ class TaxApp:
         tk.Label(flt, text="🔍 Поиск:", bg="#fafafa").pack(side="left", padx=5)
         self.search_var = tk.StringVar()
         self.search_var.trace("w", lambda *a: self.filter_vehicles())
-        ttk.Entry(flt, textvariable=self.search_var, width=20).pack(side="left", padx=5)
+        search_entry = ttk.Entry(flt, textvariable=self.search_var, width=20)
+        _attach_entry_clipboard(search_entry)
+        search_entry.pack(side="left", padx=5)
         tk.Label(flt, text="Тип:", bg="#fafafa").pack(side="left", padx=(20, 5))
         self.type_filter = ttk.Combobox(
             flt,
@@ -1384,14 +1452,19 @@ class TaxApp:
         self._create_tree()
         
         # Контекстное меню
+        self._ctx_cell = None
         self.ctx = tk.Menu(self.root, tearoff=0)
         self.ctx.add_command(label="✏️ Редактировать", command=self.edit_vehicle)
         self.ctx.add_command(label="🗑️ Списать", command=self.dispose_vehicle)
         self.ctx.add_command(label="📊 История налога", command=self.show_tax_history)
         self.ctx.add_separator()
+        self.ctx.add_command(label="📋 Копировать ячейку", command=self._copy_cell)
+        self.ctx.add_command(label="📋 Копировать строку", command=self._copy_row)
+        self.ctx.add_separator()
         self.ctx.add_command(label="❌ Удалить полностью", command=self.delete_vehicle)
-        self.tree.bind("<Button-3>", lambda e: self.ctx.post(e.x_root, e.y_root))
+        self.tree.bind("<Button-3>", self._on_tree_right_click)
         self.tree.bind("<Double-1>", lambda e: self.edit_vehicle())
+        self.tree.bind("<Control-KeyPress>", self._on_tree_ctrl_key, add="+")
 
         # Нижняя панель (создаётся один раз)
         bot = tk.Frame(self.root, bg="#f0f0f0", pady=8)
@@ -1453,8 +1526,54 @@ class TaxApp:
         tf.grid_columnconfigure(0, weight=1)
 
         # Привязываем контекстное меню к новому дереву
-        self.tree.bind("<Button-3>", lambda e: self.ctx.post(e.x_root, e.y_root))
+        self.tree.bind("<Button-3>", self._on_tree_right_click)
         self.tree.bind("<Double-1>", lambda e: self.edit_vehicle())
+        self.tree.bind("<Control-KeyPress>", self._on_tree_ctrl_key, add="+")
+
+    def _on_tree_right_click(self, event):
+        """Запоминает ячейку под курсором и открывает меню."""
+        iid = self.tree.identify_row(event.y)
+        col = self.tree.identify_column(event.x)
+        if iid:
+            if iid not in self.tree.selection():
+                self.tree.selection_set(iid)
+            self.tree.focus(iid)
+        self._ctx_cell = (iid, col)
+        try:
+            self.ctx.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.ctx.grab_release()
+
+    def _on_tree_ctrl_key(self, event):
+        # VK-код C = 67 (не зависит от раскладки)
+        if event.keycode == 67:
+            self._copy_row()
+            return "break"
+
+    def _copy_to_clipboard(self, text):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
+    def _copy_cell(self):
+        """Копирует значение ячейки, на которой был правый клик."""
+        if not self._ctx_cell or not self._ctx_cell[0]:
+            return
+        iid, col = self._ctx_cell
+        try:
+            index = int(str(col).replace("#", "")) - 1
+            values = self.tree.item(iid, "values")
+            if 0 <= index < len(values):
+                self._copy_to_clipboard(str(values[index]))
+        except (ValueError, IndexError):
+            pass
+
+    def _copy_row(self):
+        """Копирует выбранные строки (значения через табуляцию)."""
+        sel = self.tree.selection()
+        if not sel:
+            return
+        lines = ["\t".join(str(x) for x in self.tree.item(iid, "values")) for iid in sel]
+        self._copy_to_clipboard("\n".join(lines))
 
     def auto_load_config(self):
         def thread():
@@ -1601,18 +1720,21 @@ class TaxApp:
                     row=0, column=0, padx=5, pady=5
                 )
                 min_power = ttk.Entry(add_dialog, width=10)
+                _attach_entry_clipboard(min_power)
                 min_power.grid(row=0, column=1, padx=5, pady=5)
 
                 ttk.Label(add_dialog, text="Макс. мощность (0 = свыше):").grid(
                     row=1, column=0, padx=5, pady=5
                 )
                 max_power = ttk.Entry(add_dialog, width=10)
+                _attach_entry_clipboard(max_power)
                 max_power.grid(row=1, column=1, padx=5, pady=5)
 
                 ttk.Label(add_dialog, text="Ставка (руб/л.с.):").grid(
                     row=2, column=0, padx=5, pady=5
                 )
                 rate_entry = ttk.Entry(add_dialog, width=10)
+                _attach_entry_clipboard(rate_entry)
                 rate_entry.grid(row=2, column=1, padx=5, pady=5)
 
                 def save_new_rate():
@@ -1675,6 +1797,7 @@ class TaxApp:
                     row=0, column=0, padx=5, pady=5
                 )
                 rate_entry = ttk.Entry(edit_dialog, width=10)
+                _attach_entry_clipboard(rate_entry)
                 rate_entry.insert(0, str(current_rate))
                 rate_entry.grid(row=0, column=1, padx=5, pady=5)
 
@@ -2185,6 +2308,7 @@ class TaxApp:
                 )
             else:
                 entries[key] = ttk.Entry(dialog, width=55)
+                _attach_entry_clipboard(entries[key])
                 default = initial.get(key, "") if initial else ""
                 # Даты из БД конвертируем в ДД.ММ.ГГГГ
                 if key in ("дата_постановки", "дата_списания") and default:
