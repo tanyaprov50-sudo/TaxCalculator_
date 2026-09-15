@@ -38,6 +38,20 @@ def _parse_ru_date(s):
     return s
 
 
+def _parse_date_to_datetime(s):
+    """Парсит дату из БД в datetime. Поддерживает ГГГГ-ММ-ДД, ДД.ММ.ГГГГ, ДД-ММ-ГГГГ.
+    Возвращает None, если дата пустая или не распознана."""
+    if not s or str(s).strip() in ("", "None", "nan"):
+        return None
+    s = str(s).strip()[:10]
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def _db_date_to_ru(s):
     """Конвертирует дату из БД (ГГГГ-ММ-ДД) в русский формат (ДД.ММ.ГГГГ)"""
     if not s or str(s).strip() == "" or str(s).strip() in ("None", "nan"):
@@ -322,7 +336,7 @@ class VehicleDatabase:
                         return val.strftime("%Y-%m-%d")
                     if hasattr(val, 'strftime'):  # pandas Timestamp
                         return val.strftime("%Y-%m-%d")
-                    return str(val).strip()
+                    return _parse_ru_date(str(val).strip())
 
                 data = {
                     "марка": str(row.get("марка", "")),
@@ -1833,15 +1847,13 @@ class TaxApp:
             year_end = datetime(tax_year, 12, 31)
 
             # Дата начала владения
-            if start_str and str(start_str) not in ("", "None", "nan"):
-                start = datetime.strptime(str(start_str)[:10], "%Y-%m-%d")
-            else:
+            start = _parse_date_to_datetime(start_str)
+            if start is None:
                 start = year_start
 
             # Дата конца владения
-            if end_str and str(end_str) not in ("", "None", "nan"):
-                end = datetime.strptime(str(end_str)[:10], "%Y-%m-%d")
-            else:
+            end = _parse_date_to_datetime(end_str)
+            if end is None:
                 end = year_end
 
             # Обрезаем по границам года
@@ -1867,12 +1879,12 @@ class TaxApp:
             year_end = datetime(tax_year, 12, 31)
 
             if start_str and str(start_str) not in ("", "None", "nan"):
-                start = datetime.strptime(str(start_str)[:10], "%Y-%m-%d")
+                start = _parse_date_to_datetime(start_str) or year_start
             else:
                 start = year_start
 
             if end_str and str(end_str) not in ("", "None", "nan"):
-                end = datetime.strptime(str(end_str)[:10], "%Y-%m-%d")
+                end = _parse_date_to_datetime(end_str) or year_end
             else:
                 end = year_end
 
