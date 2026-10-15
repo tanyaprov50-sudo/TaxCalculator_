@@ -273,6 +273,56 @@ def _attach_entry_clipboard(widget):
     widget.bind("<Button-3>", show_menu, add="+")
 
 
+def vehicle_adjustments(vehicle, tax_year):
+    """(повышающий коэффициент, коэффициент льготы) для ТС.
+
+    Оба значения применяются, только если соответствующий переключатель
+    включён в карточке ТС (по умолчанию выключены — расчёт не меняется).
+
+    Повышающий коэффициент ×3 — ст. 362 НК РФ п. 2 (легковые автомобили
+    из Перечня Минпромторга): 10–15 млн ₽ — не более 10 лет с года выпуска,
+    свыше 15 млн ₽ — не более 20 лет.
+    Льгота — процент вычета от суммы налога по закону субъекта РФ.
+    """
+    k = 1.0
+    if vehicle.get("коэф_вкл"):
+        try:
+            price = float(vehicle.get("стоимость_млн") or 0)
+            year = int(vehicle.get("год_выпуска") or 0)
+        except (TypeError, ValueError):
+            price, year = 0.0, 0
+        age = (tax_year - year) if year else None
+        if (
+            vehicle.get("тип_тс", "легковые") == "легковые"
+            and price >= 10
+            and age is not None
+            and ((10 <= price < 15 and age <= 10) or (price >= 15 and age <= 20))
+        ):
+            k = 3.0
+    kb = 1.0
+    if vehicle.get("льгота_вкл"):
+        try:
+            pct = float(vehicle.get("льгота_процент") or 0)
+        except (TypeError, ValueError):
+            pct = 0.0
+        kb = max(0.0, 1.0 - pct / 100.0)
+    return k, kb
+
+
+def format_adjustments(vehicle, k, kb):
+    """Текст для колонки «Коэф./Льгота» и экспорта: «×3 −50%» (пусто — выкл.)."""
+    parts = []
+    if k != 1:
+        parts.append(f"×{k:g}")
+    if kb != 1:
+        try:
+            pct = float(vehicle.get("льгота_процент") or 0)
+        except (TypeError, ValueError):
+            pct = 0.0
+        parts.append(f"−{pct:g}%")
+    return " ".join(parts)
+
+
 class VehicleDatabase:
     """Управление базой данных транспортных средств"""
 
@@ -326,6 +376,8 @@ class VehicleDatabase:
                 мощность REAL, год_выпуска INTEGER, тип_тс TEXT,
                 vin TEXT, инв_номер TEXT, дата_постановки DATE, дата_списания DATE,
                 статус TEXT DEFAULT 'active', примечание TEXT,
+                коэф_вкл INTEGER DEFAULT 0, стоимость_млн REAL DEFAULT 0,
+                льгота_вкл INTEGER DEFAULT 0, льгота_процент REAL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
             cursor.execute("""CREATE TABLE IF NOT EXISTS tax_history (
@@ -346,13 +398,26 @@ class VehicleDatabase:
             )
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_type ON vehicles(тип_тс)")
 
+            # Миграция старых БД: поля коэффициента/льготы (по умолчанию выключены)
+            cursor.execute("PRAGMA table_info(vehicles)")
+            existing_cols = {row[1] for row in cursor.fetchall()}
+            for col_def in (
+                "коэф_вкл INTEGER DEFAULT 0",
+                "стоимость_млн REAL DEFAULT 0",
+                "льгота_вкл INTEGER DEFAULT 0",
+                "льгота_процент REAL DEFAULT 0",
+            ):
+                if col_def.split()[0] not in existing_cols:
+                    cursor.execute(f"ALTER TABLE vehicles ADD COLUMN {col_def}")
+
     def add_vehicle(self, data):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """INSERT INTO vehicles
-                (марка, модель, гос_номер, мощность, год_выпуска, тип_тс, vin, инв_номер, дата_постановки, дата_списания, статус, примечание)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (марка, модель, гос_номер, мощность, год_выпуска, тип_тс, vin, инв_номер, дата_постановки, дата_списания, статус, примечание,
+                 коэф_вкл, стоимость_млн, льгота_вкл, льгота_процент)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data.get("марка", ""),
                     data.get("модель", ""),
@@ -366,6 +431,10 @@ class VehicleDatabase:
                     data.get("дата_списания", ""),
                     "active",
                     data.get("примечание", ""),
+                    data.get("коэф_вкл", 0) or 0,
+                    data.get("стоимость_млн", 0) or 0,
+                    data.get("льгота_вкл", 0) or 0,
+                    data.get("льгота_процент", 0) or 0,
                 ),
             )
             vehicle_id = cursor.lastrowid
@@ -377,6 +446,7 @@ class VehicleDatabase:
         "марка", "модель", "гос_номер", "мощность", "год_выпуска",
         "тип_тс", "vin", "инв_номер", "дата_постановки", "дата_списания",
         "статус", "примечание",
+        "коэф_вкл", "стоимость_млн", "льгота_вкл", "льгота_процент",
     }
 
     def update_vehicle(self, vehicle_id, data):
@@ -513,6 +583,10 @@ class VehicleDatabase:
             "мощность",
             "год_выпуска",
             "тип_тс",
+            "коэф_вкл",
+            "стоимость_млн",
+            "льгота_вкл",
+            "льгота_процент",
             "vin",
             "дата_постановки",
             "дата_списания",
@@ -1691,6 +1765,7 @@ class TaxApp:
             ("год", "Год", 55),
             ("тип_тс", "Тип", 90),
             ("ставка", "Ставка", 70),
+            ("коэф", "Коэф./Льгота", 100),
             ("1кв", "1 кв", 70),
             ("2кв", "2 кв", 70),
             ("3кв", "3 кв", 70),
@@ -2474,10 +2549,13 @@ class TaxApp:
 
             # Расчёт налога: сначала точная итоговая сумма, потом распределение по кварталам
             total_months = sum(quarter_months.values())
-            total_tax = round(v["мощность"] * rate * total_months / 12)
+            # Опциональные коэффициенты (по умолчанию выключены): ×3 и льгота
+            k, kb = vehicle_adjustments(v, year)
+            adjust_text = format_adjustments(v, k, kb)
+            total_tax = round(v["мощность"] * rate * total_months / 12 * k * kb)
 
             power = v["мощность"]
-            raw = {q: power * rate * m / 12 for q, m in quarter_months.items()}
+            raw = {q: power * rate * m / 12 * k * kb for q, m in quarter_months.items()}
             floored = {q: int(raw[q]) for q in raw}
             remainders = sorted(raw.keys(), key=lambda q: -(raw[q] - floored[q]))
             diff = total_tax - sum(floored.values())
@@ -2532,6 +2610,7 @@ class TaxApp:
                 v.get("год_выпуска", ""),
                 v.get("тип_тс", ""),
                 rate,
+                adjust_text,
                 fmt(quarter_taxes[1]),
                 fmt(quarter_taxes[2]),
                 fmt(quarter_taxes[3]),
@@ -2565,6 +2644,7 @@ class TaxApp:
                     "год_выпуска": v.get("год_выпуска", ""),
                     "тип_тс": v.get("тип_тс", ""),
                     "ставка": rate,
+                    "коэффициенты": adjust_text,
                     "месяцев_1кв": quarter_months[1],
                     "месяцев_2кв": quarter_months[2],
                     "месяцев_3кв": quarter_months[3],
@@ -2618,10 +2698,11 @@ class TaxApp:
             is_disposed = v.get("статус") == "disposed" or bool(disposal_date)
 
             total_months = sum(quarter_months.values())
-            tax_total = round(v["мощность"] * rate * total_months / 12)
+            k, kb = vehicle_adjustments(v, self.tax_year)
+            tax_total = round(v["мощность"] * rate * total_months / 12 * k * kb)
 
             power = v["мощность"]
-            raw = {q: power * rate * m / 12 for q, m in quarter_months.items()}
+            raw = {q: power * rate * m / 12 * k * kb for q, m in quarter_months.items()}
             floored = {q: int(raw[q]) for q in raw}
             remainders = sorted(raw.keys(), key=lambda q: -(raw[q] - floored[q]))
             diff = tax_total - sum(floored.values())
@@ -2696,10 +2777,101 @@ class TaxApp:
                     default = _db_date_to_ru(default)
                 entries[key].insert(0, str(default) if default else "")
             entries[key].grid(row=i, column=1, padx=10, pady=8)
-        return dialog, entries, len(fields)
+
+        # --- Опциональные поля: повышающий коэффициент и льгота ---
+        # Переключатели; по умолчанию ВЫКЛ — текущий расчёт не меняется.
+        r0 = len(fields)
+        extras = {}
+
+        try:
+            price0 = float((initial or {}).get("стоимость_млн") or 0)
+        except (TypeError, ValueError):
+            price0 = 0.0
+        try:
+            pct0 = float((initial or {}).get("льгота_процент") or 0)
+        except (TypeError, ValueError):
+            pct0 = 0.0
+
+        extras["use_coef"] = tk.BooleanVar(
+            value=bool(int((initial or {}).get("коэф_вкл") or 0))
+        )
+        tk.Checkbutton(
+            dialog,
+            text="Повышающий коэффициент ×3 (ст. 362 НК РФ):\nстоимость авто по Перечню, млн ₽",
+            variable=extras["use_coef"],
+            font=("Segoe UI", 10),
+            justify="right",
+        ).grid(row=r0, column=0, sticky="e", padx=10, pady=8)
+        price_entry = ttk.Entry(dialog, width=55)
+        _attach_entry_clipboard(price_entry)
+        if price0:
+            price_entry.insert(0, f"{price0:g}")
+        price_entry.grid(row=r0, column=1, padx=10, pady=8)
+        extras["price"] = price_entry
+
+        extras["use_benefit"] = tk.BooleanVar(
+            value=bool(int((initial or {}).get("льгота_вкл") or 0))
+        )
+        tk.Checkbutton(
+            dialog,
+            text="Льгота по закону субъекта РФ:\nпроцент вычета от суммы налога",
+            variable=extras["use_benefit"],
+            font=("Segoe UI", 10),
+            justify="right",
+        ).grid(row=r0 + 1, column=0, sticky="e", padx=10, pady=8)
+        benefit_cb = ttk.Combobox(
+            dialog, values=("10", "25", "50", "75", "100"), width=53
+        )
+        benefit_cb.set(f"{pct0:g}" if pct0 else "50")
+        benefit_cb.grid(row=r0 + 1, column=1, padx=10, pady=8)
+        extras["benefit"] = benefit_cb
+
+        # Поля доступны только при включённом переключателе
+        def _sync_extra_state(*_args):
+            price_entry.config(
+                state="normal" if extras["use_coef"].get() else "disabled"
+            )
+            benefit_cb.config(
+                state="normal" if extras["use_benefit"].get() else "disabled"
+            )
+
+        extras["use_coef"].trace("w", _sync_extra_state)
+        extras["use_benefit"].trace("w", _sync_extra_state)
+        _sync_extra_state()
+
+        return dialog, entries, len(fields) + 2, extras
+
+    def _read_extras(self, extras):
+        """Читает опциональные поля диалога ТС (коэффициент/льгота)."""
+        data = {
+            "коэф_вкл": 1 if extras["use_coef"].get() else 0,
+            "льгота_вкл": 1 if extras["use_benefit"].get() else 0,
+        }
+        price = (
+            str(extras["price"].get()).strip().replace(",", ".").replace("млн", "").strip()
+        )
+        try:
+            data["стоимость_млн"] = float(price) if price else 0.0
+        except ValueError:
+            raise ValueError("Стоимость: введите число, например 12,5") from None
+        if data["коэф_вкл"] and data["стоимость_млн"] <= 0:
+            raise ValueError(
+                "Стоимость по Перечню не указана: введите её (млн ₽) "
+                "или снимите флажок «Повышающий коэффициент»"
+            )
+        pct = (
+            str(extras["benefit"].get()).strip().replace(",", ".").replace("%", "").strip()
+        )
+        try:
+            data["льгота_процент"] = float(pct) if pct else 0.0
+        except ValueError:
+            raise ValueError("Льгота: укажите процент числом, например 50") from None
+        if data["льгота_вкл"] and not 0 < data["льгота_процент"] <= 100:
+            raise ValueError("Льгота: укажите процент от 1 до 100")
+        return data
 
     def add_vehicle_dialog(self):
-        dialog, entries, nf = self._vehicle_dialog("➕ Добавить ТС")
+        dialog, entries, nf, extras = self._vehicle_dialog("➕ Добавить ТС")
 
         def save():
             try:
@@ -2711,6 +2883,7 @@ class TaxApp:
                     )
                     for k, v in entries.items()
                 }
+                data.update(self._read_extras(extras))
                 # Парсим даты в русском формате
                 data["дата_постановки"] = _parse_ru_date(data.get("дата_постановки", ""))
                 data["дата_списания"] = _parse_ru_date(data.get("дата_списания", ""))
@@ -2743,7 +2916,7 @@ class TaxApp:
         vehicle = self.db.get_vehicle_by_id(vid)
         if not vehicle:
             return
-        dialog, entries, nf = self._vehicle_dialog("✏️ Редактировать ТС", vehicle)
+        dialog, entries, nf, extras = self._vehicle_dialog("✏️ Редактировать ТС", vehicle)
 
         def save():
             try:
@@ -2755,6 +2928,7 @@ class TaxApp:
                     )
                     for k, v in entries.items()
                 }
+                data.update(self._read_extras(extras))
                 data["дата_постановки"] = _parse_ru_date(data.get("дата_постановки", ""))
                 data["дата_списания"] = _parse_ru_date(data.get("дата_списания", ""))
                 self.db.update_vehicle(vid, data)
@@ -2807,10 +2981,12 @@ class TaxApp:
 
             # Расчёт налога: сначала точная итоговая сумма, потом распределение по кварталам
             total_months = sum(quarter_months.values())
-            total_tax = round(v["мощность"] * rate * total_months / 12)
+            # Опциональные коэффициенты (по умолчанию выключены): ×3 и льгота
+            k, kb = vehicle_adjustments(v, year)
+            total_tax = round(v["мощность"] * rate * total_months / 12 * k * kb)
 
             power = v["мощность"]
-            raw = {q: power * rate * m / 12 for q, m in quarter_months.items()}
+            raw = {q: power * rate * m / 12 * k * kb for q, m in quarter_months.items()}
             floored = {q: int(raw[q]) for q in raw}
             remainders = sorted(raw.keys(), key=lambda q: -(raw[q] - floored[q]))
             diff = total_tax - sum(floored.values())
@@ -2841,6 +3017,7 @@ class TaxApp:
                     "год_выпуска": v.get("год_выпуска", ""),
                     "тип_тс": v.get("тип_тс", ""),
                     "ставка": rate,
+                    "коэффициенты": format_adjustments(v, k, kb),
                     "месяцев_1кв": quarter_months[1],
                     "месяцев_2кв": quarter_months[2],
                     "месяцев_3кв": quarter_months[3],

@@ -91,6 +91,9 @@ check_shortcuts.ps1
 
 # Временные файлы PowerShell
 *.ps1~
+commit_msg.txt
+_pyc_out.txt
+_tests_out.txt
 
 # Отчёты
 BUGFIX_REPORT.md
