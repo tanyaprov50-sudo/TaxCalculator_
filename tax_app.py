@@ -1389,7 +1389,7 @@ class TaxApp:
         ).pack(side="right", padx=5)
         flt = tk.Frame(self.root, bg="#fafafa", pady=4)
         flt.pack(fill="x", padx=10)
-        tk.Label(flt, text="🔍 Поиск:", bg="#fafafa").pack(side="left", padx=5)
+        tk.Label(flt, text="🔍 Поиск (гос. №, инв. №, VIN, марка):", bg="#fafafa").pack(side="left", padx=5)
         self.search_var = tk.StringVar()
         self.search_var.trace("w", lambda *a: self.filter_vehicles())
         search_entry = ttk.Entry(flt, textvariable=self.search_var, width=20)
@@ -2217,6 +2217,8 @@ class TaxApp:
             if (
                 not s
                 or s in str(v.get("гос_номер", "")).lower()
+                or s in str(v.get("инв_номер", "")).lower()
+                or s in str(v.get("vin", "")).lower()
                 or s in str(v.get("марка", "")).lower()
                 or s in str(v.get("модель", "")).lower()
             )
