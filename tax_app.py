@@ -1835,7 +1835,6 @@ class TaxApp:
             ("💾 Сохранить расчёт", self.save_calculation, "#fff3e0"),
             ("📁 Импорт Excel", self.import_excel, "#fff3e0"),
             ("📤 Экспорт в Excel", self.export_excel, "#f3e5f5"),
-            ("🖨️ Справка бухгалтерии", self.export_accounting_report, "#f3e5f5"),
         ]:
             tk.Button(
                 top_row1, text=text, command=cmd, bg=bg, relief="flat", padx=8, pady=3
@@ -2037,6 +2036,10 @@ class TaxApp:
         ).pack(side="right", padx=5)
         tk.Button(
             bot, text="📈 Отчёт по годам", command=self.show_year_report, bg="#e8e8e8"
+        ).pack(side="right", padx=5)
+        tk.Button(
+            bot, text="🖨️ Справка бухгалтерии", command=self.export_accounting_report,
+            bg="#e0e8f0",
         ).pack(side="right", padx=5)
         tk.Button(
             bot, text="📋 Журнал изменений", command=self.show_change_log, bg="#e8e8e8"
