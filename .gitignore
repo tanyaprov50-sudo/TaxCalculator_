@@ -77,6 +77,8 @@ debug_*.py
 debug_*.txt
 check_*.py
 test_*.py
+!tests/test_*.py
+!tests/__init__.py
 test_*.xlsx
 create_test_*.py
 fix_errors.py
