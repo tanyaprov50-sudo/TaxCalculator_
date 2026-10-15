@@ -320,6 +320,37 @@ check(
     str(v2),
 )
 
+# ==================== 11. Десятичные ставки ====================
+print("\n--- 11. Десятичные ставки ---")
+check("ставка: '12,5' -> 12.5", tax_app._parse_rate_value("12,5") == 12.5)
+check("ставка: '12.5' -> 12.5", tax_app._parse_rate_value("12.5") == 12.5)
+check("ставка: '30' -> 30.0", tax_app._parse_rate_value("30") == 30.0)
+check("ставка: '10,6 руб./л.с.' -> 10.6", tax_app._parse_rate_value("10,6 руб./л.с.") == 10.6)
+check("ставка: 'свыше 200 - 80' -> 80", tax_app._parse_rate_value("свыше 200 - 80") == 80.0)
+check(
+    "ставка: неразрывный пробел",
+    tax_app._parse_rate_value("12,5\xa0руб.") == 12.5,
+)
+try:
+    tax_app._parse_rate_value("нет числа")
+    check("ставка: мусор -> ValueError", False)
+except ValueError:
+    check("ставка: мусор -> ValueError", True)
+
+# _parse_html раньше ломал «12,5» в «125» (int от всех цифр) — регрессия под запятую
+html_rates = """
+<table>
+<tr><td>Легковые автомобили</td></tr>
+<tr><td>100 - 150</td><td>12,5</td></tr>
+<tr><td>свыше 350</td><td>80</td></tr>
+</table>
+"""
+_loader = tax_app.AutoConfigLoader.__new__(tax_app.AutoConfigLoader)
+_parsed = _loader._parse_html(html_rates) or {}
+_leg = _parsed.get("легковые", {})
+check("html-парсер: десятичная ставка 12,5 не ломается", _leg.get((100, 150)) == 12.5, str(_leg))
+check("html-парсер: целая ставка 80", _leg.get((350, float("inf"))) == 80.0, str(_leg))
+
 print()
 if FAILED:
     print(f"ПРОВАЛЕНО тестов: {len(FAILED)}: {', '.join(FAILED)}")

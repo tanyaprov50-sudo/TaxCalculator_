@@ -207,6 +207,20 @@ def _status_tag(vehicle, year):
     return ""
 
 
+def _parse_rate_value(text):
+    """Разбирает текстовое значение налоговой ставки в float.
+
+    Понимает «12», «12,5», «12.5», «10,6 руб./л.с.», неразрывные пробелы.
+    Если в тексте несколько чисел (например, «свыше 200 — 80»), берёт последнее.
+    Бросает ValueError, если число не найдено.
+    """
+    s = str(text).replace("\xa0", " ").strip().lower().replace(",", ".")
+    nums = re.findall(r"\d+(?:\.\d+)?", s)
+    if not nums:
+        raise ValueError(f"не удалось разобрать ставку: {text!r}")
+    return float(nums[-1])
+
+
 def _attach_entry_clipboard(widget):
     """Добавляет надёжные Копировать/Вставить/Вырезать/Выделить всё
     для поля ввода: работает при любой раскладке (по коду клавиши) и по правому клику."""
@@ -971,7 +985,7 @@ class AutoConfigLoader:
                         low, high = self._parse_range(cols[0].text.strip())
                         if low is None:
                             continue
-                        rate = int("".join(filter(str.isdigit, cols[-1].text.strip())))
+                        rate = _parse_rate_value(cols[-1].text)
                         if rate > 0:
                             type_rates[(low, high)] = rate
                     except (ValueError, IndexError):
@@ -2182,7 +2196,7 @@ class TaxApp:
                     try:
                         min_p = int(min_power.get())
                         max_p = int(max_power.get())
-                        rate = float(rate_entry.get())
+                        rate = _parse_rate_value(rate_entry.get())
 
                         if max_p == 0 or max_p == "0":
                             max_p = float("inf")
@@ -2244,7 +2258,7 @@ class TaxApp:
 
                 def save_edited_rate():
                     try:
-                        new_rate = float(rate_entry.get())
+                        new_rate = _parse_rate_value(rate_entry.get())
                         custom_rates[vehicle_type][(min_p, max_p)] = new_rate
 
                         # Обновляем таблицу
