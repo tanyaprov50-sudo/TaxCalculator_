@@ -337,6 +337,48 @@ def format_adjustments(vehicle, k, kb):
     return " ".join(parts)
 
 
+def compute_vehicle_tax(vehicle, year, rate, quarter_months):
+    """Единая точка расчёта налога на ТС за год.
+
+    Возвращает (total_tax, quarter_taxes, k, kb):
+      total_tax — итоговый налог (пересчитан после обнуления кварталов),
+      quarter_taxes — {квартал: налог} с распределением по доле дней,
+      k, kb — применённые коэффициенты (×3 и льгота).
+
+    Коэффициенты ×3/льгота учитываются здесь же; кварталы после даты
+    списания обнуляются.
+    """
+    power = vehicle["мощность"]
+    k, kb = vehicle_adjustments(vehicle, year)
+    total_months = sum(quarter_months.values())
+    total_tax = round(power * rate * total_months / 12 * k * kb)
+
+    raw = {q: power * rate * m / 12 * k * kb for q, m in quarter_months.items()}
+    floored = {q: int(raw[q]) for q in raw}
+    remainders = sorted(raw.keys(), key=lambda q: -(raw[q] - floored[q]))
+    diff = total_tax - sum(floored.values())
+    quarter_taxes = dict(floored)
+    for i in range(diff):
+        quarter_taxes[remainders[i]] += 1
+
+    # Списание: обнуляем кварталы после даты списания
+    disposal_date = vehicle.get("дата_списания", "")
+    if isinstance(disposal_date, datetime):
+        disposal_date = disposal_date.strftime("%Y-%m-%d")
+    is_disposed = vehicle.get("статус", "active") == "disposed" or bool(disposal_date)
+    if is_disposed and disposal_date:
+        try:
+            disp = datetime.strptime(str(disposal_date)[:10], "%Y-%m-%d")
+            disp_quarter = (disp.month - 1) // 3 + 1
+            for q in range(disp_quarter + 1, 5):
+                quarter_taxes[q] = 0
+        except (ValueError, TypeError):
+            pass
+
+    total_tax = sum(quarter_taxes.values())
+    return total_tax, quarter_taxes, k, kb
+
+
 class VehicleDatabase:
     """Управление базой данных транспортных средств"""
 
@@ -2561,34 +2603,11 @@ class TaxApp:
 
             is_disposed = status == "disposed" or bool(disposal_date)
 
-            # Расчёт налога: сначала точная итоговая сумма, потом распределение по кварталам
-            total_months = sum(quarter_months.values())
-            # Опциональные коэффициенты (по умолчанию выключены): ×3 и льгота
-            k, kb = vehicle_adjustments(v, year)
+            # Единая точка расчёта: итог + распределение по кварталам + списание
+            total_tax, quarter_taxes, k, kb = compute_vehicle_tax(
+                v, year, rate, quarter_months
+            )
             adjust_text = format_adjustments(v, k, kb)
-            total_tax = round(v["мощность"] * rate * total_months / 12 * k * kb)
-
-            power = v["мощность"]
-            raw = {q: power * rate * m / 12 * k * kb for q, m in quarter_months.items()}
-            floored = {q: int(raw[q]) for q in raw}
-            remainders = sorted(raw.keys(), key=lambda q: -(raw[q] - floored[q]))
-            diff = total_tax - sum(floored.values())
-            quarter_taxes = dict(floored)
-            for i in range(diff):
-                quarter_taxes[remainders[i]] += 1
-
-            # Если ТС списано — обнуляем кварталы после списания
-            if is_disposed and disposal_date:
-                try:
-                    disp = datetime.strptime(str(disposal_date)[:10], "%Y-%m-%d")
-                    disp_quarter = (disp.month - 1) // 3 + 1
-                    for q in range(disp_quarter + 1, 5):
-                        quarter_taxes[q] = 0
-                except (ValueError, TypeError):
-                    pass
-
-            # Пересчитываем итого после обнуления кварталов
-            total_tax = sum(quarter_taxes.values())
 
             # Форматирование с пробелом вместо запятой
             def fmt(val):
@@ -2702,38 +2721,10 @@ class TaxApp:
         for v in self.current_vehicles:
             rate = self.get_rate_for_vehicle(v)
             quarter_months = self.get_quarter_months(v, self.tax_year)
-
-            # Нормализуем дату списания
-            disposal_date = v.get("дата_списания", "")
-            if isinstance(disposal_date, datetime):
-                disposal_date = disposal_date.strftime("%Y-%m-%d")
-            elif disposal_date:
-                disposal_date = str(disposal_date).strip()
-            is_disposed = v.get("статус") == "disposed" or bool(disposal_date)
-
-            total_months = sum(quarter_months.values())
-            k, kb = vehicle_adjustments(v, self.tax_year)
-            tax_total = round(v["мощность"] * rate * total_months / 12 * k * kb)
-
-            power = v["мощность"]
-            raw = {q: power * rate * m / 12 * k * kb for q, m in quarter_months.items()}
-            floored = {q: int(raw[q]) for q in raw}
-            remainders = sorted(raw.keys(), key=lambda q: -(raw[q] - floored[q]))
-            diff = tax_total - sum(floored.values())
-            quarter_taxes = dict(floored)
-            for i in range(diff):
-                quarter_taxes[remainders[i]] += 1
-
-            if is_disposed and disposal_date:
-                try:
-                    disp = datetime.strptime(str(disposal_date)[:10], "%Y-%m-%d")
-                    disp_quarter = (disp.month - 1) // 3 + 1
-                    for q in range(disp_quarter + 1, 5):
-                        quarter_taxes[q] = 0
-                except (ValueError, TypeError):
-                    pass
-
-            total_tax += sum(quarter_taxes.values())
+            tax_v, _quarter_taxes, _k, _kb = compute_vehicle_tax(
+                v, self.tax_year, rate, quarter_months
+            )
+            total_tax += tax_v
         self.lbl_summary.config(
             text=f"📊 Всего: {total} ТС | Налог: {total_tax:,.0f} ₽".replace(",", " ")
         )
@@ -2993,32 +2984,10 @@ class TaxApp:
             status = v.get("статус", "active")
             is_disposed = status == "disposed" or bool(disposal_date)
 
-            # Расчёт налога: сначала точная итоговая сумма, потом распределение по кварталам
-            total_months = sum(quarter_months.values())
-            # Опциональные коэффициенты (по умолчанию выключены): ×3 и льгота
-            k, kb = vehicle_adjustments(v, year)
-            total_tax = round(v["мощность"] * rate * total_months / 12 * k * kb)
-
-            power = v["мощность"]
-            raw = {q: power * rate * m / 12 * k * kb for q, m in quarter_months.items()}
-            floored = {q: int(raw[q]) for q in raw}
-            remainders = sorted(raw.keys(), key=lambda q: -(raw[q] - floored[q]))
-            diff = total_tax - sum(floored.values())
-            quarter_taxes = dict(floored)
-            for i in range(diff):
-                quarter_taxes[remainders[i]] += 1
-
-            # Обнуляем кварталы после списания
-            if is_disposed and disposal_date:
-                try:
-                    disp = datetime.strptime(str(disposal_date)[:10], "%Y-%m-%d")
-                    disp_quarter = (disp.month - 1) // 3 + 1
-                    for q in range(disp_quarter + 1, 5):
-                        quarter_taxes[q] = 0
-                except (ValueError, TypeError):
-                    pass
-
-            total_tax = sum(quarter_taxes.values())
+            # Единая точка расчёта: итог + распределение по кварталам + списание
+            total_tax, quarter_taxes, k, kb = compute_vehicle_tax(
+                v, year, rate, quarter_months
+            )
             self.db.save_tax_calculation(v["id"], year, rate, total_tax)
             self.calculated_results.append(
                 {
