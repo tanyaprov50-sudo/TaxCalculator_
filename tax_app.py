@@ -20,6 +20,7 @@ import re
 import shutil
 import glob
 import sqlite3
+import zipfile
 from contextlib import contextmanager
 
 
@@ -98,6 +99,36 @@ def _make_db_backup(db_file, keep=5):
         return dest
     except OSError:
         return None
+
+
+def build_data_zip(dest_path, data_dir):
+    """Создаёт ZIP со всеми файлами данных (базы, организации, ставки, бэкапы).
+    Возвращает список имён файлов внутри архива; пустой список — если данных нет."""
+    files = []
+    for name in ("organizations.json", "custom_rates.json", "tax_config_cache.json"):
+        p = os.path.join(data_dir, name)
+        if os.path.exists(p):
+            files.append((p, name))
+    for p in glob.glob(os.path.join(data_dir, "*.db")):
+        files.append((p, os.path.basename(p)))
+    for p in glob.glob(os.path.join(data_dir, "backups", "*.db")):
+        files.append((p, "backups/" + os.path.basename(p)))
+    if not files:
+        return []
+    with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for src, arc in files:
+            z.write(src, arc)
+        manifest = [
+            "Резервная копия — Калькулятор транспортного налога",
+            f"Дата: {datetime.now():%d.%m.%Y %H:%M:%S}",
+            f"Папка данных: {data_dir}",
+            f"Файлов в архиве: {len(files)}",
+            "",
+        ]
+        manifest += [arc for _, arc in files]
+        z.writestr("manifest.txt", "\n".join(manifest))
+        names = z.namelist()
+    return [n for n in names if n != "manifest.txt"]
 
 
 # === БАЗОВАЯ ПАПКА ПРОГРАММЫ ===
@@ -1419,6 +1450,36 @@ class TaxApp:
                 "Резервная копия", "Не удалось создать резервную копию"
             )
 
+    def export_all_data_zip(self):
+        """Экспорт всех данных (базы, организации, ставки, бэкапы) в ZIP-архив."""
+        default_name = f"КалькуляторТН_данные_{datetime.now():%Y%m%d_%H%M}.zip"
+        path = filedialog.asksaveasfilename(
+            title="Сохранить резервную копию всех данных",
+            defaultextension=".zip",
+            initialfile=default_name,
+            filetypes=[("ZIP-архив", "*.zip"), ("Все файлы", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            added = build_data_zip(path, DATA_DIR)
+        except (OSError, zipfile.BadZipFile) as e:
+            messagebox.showerror("Экспорт данных", f"Не удалось создать архив:\n{e}")
+            return
+
+        if not added:
+            messagebox.showwarning(
+                "Экспорт данных", "Нечего сохранять: файлы данных не найдены."
+            )
+            return
+
+        messagebox.showinfo(
+            "Экспорт данных",
+            f"Архив создан ({len(added)} файлов):\n{path}\n\n"
+            "Скопируйте его на флешку или в облако для надёжного хранения.",
+        )
+
     def show_year_report(self):
         """Показать отчёт по годам"""
         year = self.tax_year
@@ -1704,6 +1765,10 @@ class TaxApp:
         ).pack(side="right", padx=5)
         tk.Button(
             bot, text="📋 Журнал изменений", command=self.show_change_log, bg="#e8e8e8"
+        ).pack(side="right", padx=5)
+        tk.Button(
+            bot, text="📦 Экспорт данных (ZIP)", command=self.export_all_data_zip,
+            bg="#e0e8f0",
         ).pack(side="right", padx=5)
 
     def _create_tree(self):

@@ -170,6 +170,34 @@ r4 = app.get_rate_for_vehicle(
 )
 check("ставка: свыше 300 л.с.", r4 == 135, str(r4))
 
+# --- 8. Экспорт данных в ZIP ---
+import tempfile  # noqa: E402
+import zipfile  # noqa: E402
+
+tmp = tempfile.mkdtemp()
+os.makedirs(os.path.join(tmp, "backups"))
+with open(os.path.join(tmp, "organizations.json"), "w", encoding="utf-8") as f:
+    f.write("{}")
+with open(os.path.join(tmp, "fleet_test.db"), "wb") as f:
+    f.write(b"x")
+with open(os.path.join(tmp, "backups", "fleet_test_20260101.db"), "wb") as f:
+    f.write(b"x")
+
+zpath = os.path.join(tmp, "export.zip")
+added = tax_app.build_data_zip(zpath, tmp)
+expected = {"organizations.json", "fleet_test.db", "backups/fleet_test_20260101.db"}
+check("zip: собраны все данные", set(added) == expected, str(added))
+with zipfile.ZipFile(zpath) as z:
+    names = set(z.namelist())
+check("zip: есть manifest.txt", "manifest.txt" in names, str(names))
+check("zip: бэкапы внутри", "backups/fleet_test_20260101.db" in names)
+
+empty_dir = tempfile.mkdtemp()
+check(
+    "zip: пустая папка -> пусто",
+    tax_app.build_data_zip(os.path.join(empty_dir, "e.zip"), empty_dir) == [],
+)
+
 print()
 if FAILED:
     print(f"ПРОВАЛЕНО тестов: {len(FAILED)}: {', '.join(FAILED)}")
