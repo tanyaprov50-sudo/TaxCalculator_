@@ -156,6 +156,11 @@ def _db_date_to_ru(s):
     return s
 
 
+# Цвета подсветки статуса (одни и те же для строк и легенды)
+COL_REG = "#1b8a2f"   # зелёный — поставлено на учёт в году
+COL_DISP = "#c62828"  # красный — списано в году
+
+
 def _date_year(s):
     """Возвращает год из даты (int) или None, если дата пустая/нераспознана."""
     dt = _parse_date_to_datetime(s)
@@ -1667,13 +1672,30 @@ class TaxApp:
             bg="#f0f0f0",
         )
         self.lbl_summary.pack(side="left", padx=20)
-        self.lbl_legend = tk.Label(
-            bot,
-            text="🟢 поставлено в этом году   🔴 списано в этом году",
+
+        # Легенда подсветки (кружки тем же цветом, что и строки)
+        legend = tk.Frame(bot, bg="#f0f0f0")
+        legend.pack(side="left", padx=20)
+        tk.Label(
+            legend, text="●", font=("Segoe UI", 12, "bold"), fg=COL_REG, bg="#f0f0f0"
+        ).pack(side="left")
+        self.lbl_legend_reg = tk.Label(
+            legend,
+            text=f"поставлено в {self.tax_year}",
             font=("Segoe UI", 10),
             bg="#f0f0f0",
         )
-        self.lbl_legend.pack(side="left", padx=20)
+        self.lbl_legend_reg.pack(side="left", padx=(4, 14))
+        tk.Label(
+            legend, text="●", font=("Segoe UI", 12, "bold"), fg=COL_DISP, bg="#f0f0f0"
+        ).pack(side="left")
+        self.lbl_legend_disp = tk.Label(
+            legend,
+            text=f"списано в {self.tax_year}",
+            font=("Segoe UI", 10),
+            bg="#f0f0f0",
+        )
+        self.lbl_legend_disp.pack(side="left", padx=(4, 0))
         tk.Button(
             bot, text="💾 Бэкап БД", command=self.make_backup_now, bg="#e8e8e8"
         ).pack(side="right", padx=5)
@@ -1719,8 +1741,8 @@ class TaxApp:
             )
 
         # Подсветка статуса: поставлено/списано в течение выбранного года
-        self.tree.tag_configure("reg_year", foreground="#1b8a2f")
-        self.tree.tag_configure("disp_year", foreground="#c62828")
+        self.tree.tag_configure("reg_year", foreground=COL_REG)
+        self.tree.tag_configure("disp_year", foreground=COL_DISP)
 
         self.vsb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
         self.hsb = None
@@ -2489,10 +2511,9 @@ class TaxApp:
         self.lbl_summary.config(
             text=f"📊 Всего: {total} ТС | Налог: {total_tax:,.0f} ₽".replace(",", " ")
         )
-        if getattr(self, "lbl_legend", None) is not None:
-            self.lbl_legend.config(
-                text=f"🟢 поставлено в {self.tax_year}   🔴 списано в {self.tax_year}"
-            )
+        if getattr(self, "lbl_legend_reg", None) is not None:
+            self.lbl_legend_reg.config(text=f"поставлено в {self.tax_year}")
+            self.lbl_legend_disp.config(text=f"списано в {self.tax_year}")
 
     def _vehicle_dialog(self, title, initial=None):
         dialog = tk.Toplevel(self.root)
