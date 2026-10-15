@@ -15,9 +15,99 @@ from datetime import datetime, timedelta
 import threading
 import json
 import os
+import sys
 import re
+import shutil
+import glob
 import sqlite3
 from contextlib import contextmanager
+
+
+# ============================================================================
+# ПАПКА ДАННЫХ: %APPDATA%\КалькуляторТН (не требует прав администратора)
+# ============================================================================
+
+def _migrate_legacy_files(data_dir):
+    """Однократно переносит старые файлы данных из папки программы в %APPDATA%."""
+    names = [
+        "organizations.json", "vehicle_fleet.db", "custom_rates.json",
+        "tax_config_cache.json",
+    ]
+    for name in names:
+        src = os.path.join(BASE_DIR, name)
+        dst = os.path.join(data_dir, name)
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                shutil.copy2(src, dst)
+            except OSError:
+                pass
+    # Базы организаций перечислены в organizations.json
+    try:
+        orgs_src = os.path.join(BASE_DIR, "organizations.json")
+        if os.path.exists(orgs_src):
+            with open(orgs_src, "r", encoding="utf-8") as f:
+                orgs = json.load(f)
+            if isinstance(orgs, dict):
+                for db_file in orgs.values():
+                    src = os.path.join(BASE_DIR, str(db_file))
+                    dst = os.path.join(data_dir, str(db_file))
+                    if os.path.exists(src) and not os.path.exists(dst):
+                        try:
+                            shutil.copy2(src, dst)
+                        except OSError:
+                            pass
+    except (OSError, ValueError):
+        pass
+
+
+def _get_data_dir():
+    """Возвращает папку хранения данных: %APPDATA%\\КалькуляторТН."""
+    appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
+    data_dir = os.path.join(appdata, "КалькуляторТН")
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        _migrate_legacy_files(data_dir)
+        return data_dir
+    except OSError:
+        # %APPDATA% недоступен — работаем в папке программы
+        return BASE_DIR
+
+
+def _data_path(filename):
+    """Путь к файлу данных в папке данных."""
+    return os.path.join(DATA_DIR, os.path.basename(filename))
+
+
+def _make_db_backup(db_file, keep=5):
+    """Создаёт резервную копию БД (одна в день, ротация keep последних)."""
+    try:
+        if not db_file or db_file == ":memory:" or not os.path.exists(db_file):
+            return None
+        backup_dir = os.path.join(DATA_DIR, "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        name = os.path.splitext(os.path.basename(db_file))[0]
+        stamp = datetime.now().strftime("%Y%m%d")
+        dest = os.path.join(backup_dir, f"{name}_{stamp}.db")
+        shutil.copy2(db_file, dest)
+        backups = sorted(glob.glob(os.path.join(backup_dir, f"{name}_*.db")))
+        for old in backups[:-keep]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+        return dest
+    except OSError:
+        return None
+
+
+# === БАЗОВАЯ ПАПКА ПРОГРАММЫ ===
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+DATA_DIR = _get_data_dir()
+
 
 def _parse_ru_date(s):
     """Парсит дату в формате ДД.ММ.ГГГГ или ДД-ММ-ГГГГ в строку ГГГГ-ММ-ДД для БД"""
@@ -134,12 +224,20 @@ def _attach_entry_clipboard(widget):
 class VehicleDatabase:
     """Управление базой данных транспортных средств"""
 
-    DB_FILE = "vehicle_fleet.db"
+    DB_FILE = _data_path("vehicle_fleet.db")
 
     def __init__(self, db_file=None):
-        self.DB_FILE = db_file or VehicleDatabase.DB_FILE
+        if db_file is None:
+            db_file = _data_path("vehicle_fleet.db")
+        elif db_file != ":memory:" and not os.path.isabs(db_file):
+            # Относительное имя (например, fleet_XXX.db) — в папку данных
+            db_file = _data_path(os.path.basename(db_file))
+        self.DB_FILE = db_file
         self._memory_conn = None  # Для :memory: режима
         self.init_database()
+        # Резервная копия при каждом запуске (одна в день, ротация 5)
+        if db_file != ":memory:":
+            _make_db_backup(db_file)
 
     @contextmanager
     def get_connection(self):
@@ -222,17 +320,30 @@ class VehicleDatabase:
             self._log_change(conn, vehicle_id, "create", None, str(data))
             return vehicle_id
 
+    # Белый список колонок, разрешённых для UPDATE
+    ALLOWED_COLUMNS = {
+        "марка", "модель", "гос_номер", "мощность", "год_выпуска",
+        "тип_тс", "vin", "инв_номер", "дата_постановки", "дата_списания",
+        "статус", "примечание",
+    }
+
     def update_vehicle(self, vehicle_id, data):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM vehicles WHERE id = ?", (vehicle_id,))
-            old_data = dict(cursor.fetchone())
-            # Безопасное построение SET-части через параметризованный запрос
-            set_columns = list(data.keys())
+            row = cursor.fetchone()
+            if row is None:
+                return
+            old_data = dict(row)
+            # Только разрешённые колонки — защита от SQL-инъекции через имена полей
+            clean_data = {k: v for k, v in data.items() if k in self.ALLOWED_COLUMNS}
+            if not clean_data:
+                return
+            set_columns = list(clean_data.keys())
             set_clause = ", ".join([f"{k} = ?" for k in set_columns]) + ", updated_at = CURRENT_TIMESTAMP"
-            values = list(data.values()) + [vehicle_id]
+            values = list(clean_data.values()) + [vehicle_id]
             cursor.execute(f"UPDATE vehicles SET {set_clause} WHERE id = ?", values)
-            self._log_change(conn, vehicle_id, "update", str(old_data), str(data))
+            self._log_change(conn, vehicle_id, "update", str(old_data), str(clean_data))
 
     def delete_vehicle(self, vehicle_id, soft_delete=True):
         with self.get_connection() as conn:
@@ -375,7 +486,7 @@ class VehicleDatabase:
         # Нормализация данных
         df = DataNormalizer().normalize_dataframe(df)
 
-        added, skipped, errors = 0, 0, []
+        added, updated, errors = 0, 0, []
         for idx, row in df.iterrows():
             try:
                 мощность = row.get("мощность", None)
@@ -417,11 +528,33 @@ class VehicleDatabase:
                     "дата_списания": to_date_str(row.get("дата_списания", "")),
                     "примечание": str(row.get("примечание", "")),
                 }
-                self.add_vehicle(data)
-                added += 1
+                # Дедупликация: обновляем существующее ТС вместо создания дубля
+                existing_id = self.find_duplicate_vehicle(data)
+                if existing_id is not None:
+                    self.update_vehicle(existing_id, data)
+                    updated += 1
+                else:
+                    self.add_vehicle(data)
+                    added += 1
             except Exception as e:
                 errors.append(f"Строка {idx + 2}: {e}")
-        return added, skipped, errors
+        return added, updated, errors
+
+    def find_duplicate_vehicle(self, data):
+        """Ищет существующее ТС по инв. номеру, VIN или гос. номеру (непустые поля).
+        Возвращает id найденного ТС или None."""
+        for field in ("инв_номер", "vin", "гос_номер"):
+            value = str(data.get(field, "")).strip()
+            if not value or value.lower() in ("none", "nan"):
+                continue
+            # field — из фиксированного белого списка, параметры передаются через ?
+            with self.get_connection() as conn:
+                row = conn.execute(
+                    f"SELECT id FROM vehicles WHERE {field} = ?", (value,)
+                ).fetchone()
+            if row is not None:
+                return row["id"]
+        return None
 
 
 # ============================================================================
@@ -573,7 +706,7 @@ class DataNormalizer:
 
 
 class AutoConfigLoader:
-    CACHE_FILE = "tax_config_cache.json"
+    CACHE_FILE = _data_path("tax_config_cache.json")
 
     REGION_TABLE_SOURCES = {
         "Пермский край": "https://tcnalog.ru/reg-stavki-transportnogo-naloga-Permskij-kraj.html",
@@ -963,7 +1096,7 @@ class AutoConfigLoader:
 class OrgSelector:
     """Диалог выбора или создания организации при запуске"""
 
-    ORGS_FILE = "organizations.json"
+    ORGS_FILE = _data_path("organizations.json")
 
     def __init__(self, root=None):
         # Используем переданный root или создаём свой
@@ -1194,6 +1327,8 @@ class TaxApp:
         self.current_vehicles = []
         self.calculated_results = []
         self._auto_detect = False
+        # Отчётный год (изменяется в UI через комбобокс «Год»)
+        self.tax_year = datetime.now().year
 
         self.create_ui()
         self.auto_load_config()
@@ -1236,9 +1371,36 @@ class TaxApp:
             for h in history:
                 text.insert("end", f"Год {h['год_расчёта']}: Ставка {h['ставка']} руб/л.с. → Налог: {h['сумма_налога']:,} руб.\n")
 
+    def make_backup_now(self):
+        """Ручное резервное копирование БД (с временем в имени файла)."""
+        results = []
+        for db in self.all_dbs:
+            f = db.DB_FILE
+            if f == ":memory:" or not os.path.exists(f):
+                continue
+            backup_dir = os.path.join(DATA_DIR, "backups")
+            try:
+                os.makedirs(backup_dir, exist_ok=True)
+                name = os.path.splitext(os.path.basename(f))[0]
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                dest = os.path.join(backup_dir, f"{name}_{stamp}.db")
+                shutil.copy2(f, dest)
+                results.append(dest)
+            except OSError:
+                pass
+        if results:
+            messagebox.showinfo(
+                "Резервная копия",
+                f"Создано копий: {len(results)}\n\n" + "\n".join(results),
+            )
+        else:
+            messagebox.showwarning(
+                "Резервная копия", "Не удалось создать резервную копию"
+            )
+
     def show_year_report(self):
         """Показать отчёт по годам"""
-        year = 2026
+        year = self.tax_year
         d = tk.Toplevel(self.root)
         d.title(f"📈 Отчёт за {year} год (поквартально)")
         d.geometry("700x450")
@@ -1341,6 +1503,19 @@ class TaxApp:
         )
         self.region_cb.pack(side="left", padx=3)
         self.region_cb.bind("<<ComboboxSelected>>", self.on_region_change)
+
+        # Отчётный год
+        tk.Label(top_row1, text="Год:", bg="#f0f0f0").pack(side="left", padx=(10, 2))
+        self.year_var = tk.StringVar(value=str(self.tax_year))
+        self.year_cb = ttk.Combobox(
+            top_row1,
+            textvariable=self.year_var,
+            values=[str(y) for y in range(datetime.now().year - 2, datetime.now().year + 2)],
+            width=6,
+            state="readonly",
+        )
+        self.year_cb.pack(side="left", padx=3)
+        self.year_cb.bind("<<ComboboxSelected>>", self.on_year_change)
 
         self.lbl_status = tk.Label(top_row1, text="⏳ Загрузка...", fg="blue", bg="#f0f0f0", font=("Segoe UI", 8))
         self.lbl_status.pack(side="left", padx=10)
@@ -1476,6 +1651,9 @@ class TaxApp:
             bg="#f0f0f0",
         )
         self.lbl_summary.pack(side="left", padx=20)
+        tk.Button(
+            bot, text="💾 Бэкап БД", command=self.make_backup_now, bg="#e8e8e8"
+        ).pack(side="right", padx=5)
         tk.Button(
             bot, text="📈 Отчёт по годам", command=self.show_year_report, bg="#e8e8e8"
         ).pack(side="right", padx=5)
@@ -1632,6 +1810,15 @@ class TaxApp:
 
         threading.Thread(target=thread, daemon=True).start()
 
+    def on_year_change(self, event=None):
+        """Смена отчётного года — пересчёт таблицы."""
+        try:
+            self.tax_year = int(self.year_var.get())
+        except (ValueError, TypeError):
+            return
+        self.lbl_status.config(text=f"📅 Отчётный год: {self.tax_year}", fg="blue")
+        self.show_vehicles_table(self.current_vehicles)
+
     def update_config(self):
         region = self.region_var.get()
         self.lbl_status.config(text=f"🔄 Обновление: {region}...", fg="blue")
@@ -1675,7 +1862,7 @@ class TaxApp:
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
         # Загружаем текущие ставки
-        custom_rates_file = "custom_rates.json"
+        custom_rates_file = _data_path("custom_rates.json")
         custom_rates = self._load_custom_rates(custom_rates_file)
 
         # Функция для создания вкладки с типом ТС
@@ -1900,6 +2087,8 @@ class TaxApp:
 
     def _load_custom_rates(self, filename):
         """Загружает пользовательские ставки из файла"""
+        if not os.path.isabs(filename):
+            filename = _data_path(filename)
         if os.path.exists(filename):
             try:
                 with open(filename, "r", encoding="utf-8") as f:
@@ -1931,6 +2120,8 @@ class TaxApp:
 
     def _save_custom_rates(self, filename, rates):
         """Сохраняет пользовательские ставки в файл"""
+        if not os.path.isabs(filename):
+            filename = _data_path(filename)
         # Преобразуем ключи кортежей в строки для JSON
         serializable = {}
         for vtype, vtype_rates in rates.items():
@@ -1960,8 +2151,10 @@ class TaxApp:
             self.current_vehicles = self.db.get_all_vehicles(status="active")
         self.show_vehicles_table(self.current_vehicles)
 
-    def get_ownership_months(self, vehicle, tax_year=2026):
+    def get_ownership_months(self, vehicle, tax_year=None):
         """Считает количество полных месяцев владения в налоговом году"""
+        if tax_year is None:
+            tax_year = self.tax_year
         try:
             start_str = vehicle.get("дата_постановки", "")
             end_str = vehicle.get("дата_списания", "")
@@ -1992,8 +2185,10 @@ class TaxApp:
         except (ValueError, KeyError, TypeError):
             return 12  # Если дат нет — полный год
 
-    def get_quarter_months(self, vehicle, tax_year=2026):
+    def get_quarter_months(self, vehicle, tax_year=None):
         """Возвращает dict с количеством месяцев владения по кварталам: {1: N, 2: N, 3: N, 4: N}"""
+        if tax_year is None:
+            tax_year = self.tax_year
         try:
             start_str = vehicle.get("дата_постановки", "")
             end_str = vehicle.get("дата_списания", "")
@@ -2050,7 +2245,7 @@ class TaxApp:
         rate_table = None
         if vtype == "легковые" and year:
             try:
-                age = 2026 - int(year)
+                age = self.tax_year - int(year)
                 rates_by_age = getattr(self.config_loader, "rates_by_age", {})
                 if rates_by_age:
                     for (af, at), tbl in rates_by_age.items():
@@ -2083,7 +2278,7 @@ class TaxApp:
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.calculated_results = []
-        year = 2026
+        year = self.tax_year
         for v in vehicles:
             rate = self.get_rate_for_vehicle(v)
             quarter_months = self.get_quarter_months(v, year)
@@ -2123,9 +2318,6 @@ class TaxApp:
 
             # Пересчитываем итого после обнуления кварталов
             total_tax = sum(quarter_taxes.values())
-
-            # Сохраняем расчёт в БД
-            self.db.save_tax_calculation(v["id"], year, rate, total_tax)
 
             # Форматирование с пробелом вместо запятой
             def fmt(val):
@@ -2231,7 +2423,7 @@ class TaxApp:
         total_tax = 0
         for v in self.current_vehicles:
             rate = self.get_rate_for_vehicle(v)
-            quarter_months = self.get_quarter_months(v, 2026)
+            quarter_months = self.get_quarter_months(v, self.tax_year)
 
             # Нормализуем дату списания
             disposal_date = v.get("дата_списания", "")
@@ -2412,7 +2604,7 @@ class TaxApp:
             messagebox.showwarning("Внимание", "База пуста. Добавьте ТС")
             return
         self.calculated_results = []
-        year = 2026
+        year = self.tax_year
         for v in self.current_vehicles:
             rate = self.get_rate_for_vehicle(v)
             quarter_months = self.get_quarter_months(v, year)
@@ -2505,9 +2697,9 @@ class TaxApp:
             mapping = self._column_mapping_dialog(list(df.columns))
             if mapping is None:
                 return  # Пользователь отменил
-            added, skipped, errors = self.db.import_from_excel(df, mapping)
+            added, updated, errors = self.db.import_from_excel(df, mapping)
             self.load_vehicles_from_db()
-            msg = f"✅ Добавлено: {added}\n⏭️ Пропущено: {skipped}"
+            msg = f"✅ Добавлено: {added}\n🔄 Обновлено: {updated}"
             if errors:
                 msg += f"\n❌ Ошибок: {len(errors)}\n\nПервые 5:\n" + "\n".join(
                     errors[:5]
