@@ -1819,9 +1819,12 @@ class TaxApp:
             text = f"✅ {msg} | {self.config_loader.source_name}"
             self.root.after(
                 0,
-                lambda: self.lbl_status.config(
-                    text=text, fg="green" if success else "orange"
-                ),
+                lambda: [
+                    self.lbl_status.config(
+                        text=text, fg="green" if success else "orange"
+                    ),
+                    self.show_vehicles_table(self.current_vehicles),
+                ],
             )
 
         threading.Thread(target=thread, daemon=True).start()
