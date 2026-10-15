@@ -155,6 +155,22 @@ def _db_date_to_ru(s):
             return s
     return s
 
+
+def _date_year(s):
+    """Возвращает год из даты (int) или None, если дата пустая/нераспознана."""
+    dt = _parse_date_to_datetime(s)
+    return dt.year if dt else None
+
+
+def _status_tag(vehicle, year):
+    """Тег подсветки строки: 'disp_year' — списано в году, 'reg_year' — поставлено в году, '' — нет."""
+    if _date_year(vehicle.get("дата_списания", "")) == year:
+        return "disp_year"
+    if _date_year(vehicle.get("дата_постановки", "")) == year:
+        return "reg_year"
+    return ""
+
+
 def _attach_entry_clipboard(widget):
     """Добавляет надёжные Копировать/Вставить/Вырезать/Выделить всё
     для поля ввода: работает при любой раскладке (по коду клавиши) и по правому клику."""
@@ -1651,6 +1667,13 @@ class TaxApp:
             bg="#f0f0f0",
         )
         self.lbl_summary.pack(side="left", padx=20)
+        self.lbl_legend = tk.Label(
+            bot,
+            text="🟢 поставлено в этом году   🔴 списано в этом году",
+            font=("Segoe UI", 10),
+            bg="#f0f0f0",
+        )
+        self.lbl_legend.pack(side="left", padx=20)
         tk.Button(
             bot, text="💾 Бэкап БД", command=self.make_backup_now, bg="#e8e8e8"
         ).pack(side="right", padx=5)
@@ -1694,6 +1717,10 @@ class TaxApp:
                 cid, width=cw, anchor="w" if cid in ("марка", "модель", "примечание") else "center",
                 stretch=True
             )
+
+        # Подсветка статуса: поставлено/списано в течение выбранного года
+        self.tree.tag_configure("reg_year", foreground="#1b8a2f")
+        self.tree.tag_configure("disp_year", foreground="#c62828")
 
         self.vsb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
         self.hsb = None
@@ -2338,6 +2365,9 @@ class TaxApp:
             else:
                 disp_date = ""
 
+            # Подсветка: списано в выбранном году — красный, поставлено — зелёный
+            row_tag = _status_tag(v, year)
+
             # Базовые значения
             values = [
                 v["id"],
@@ -2370,6 +2400,7 @@ class TaxApp:
                 "",
                 "end",
                 values=values,
+                tags=(row_tag,) if row_tag else (),
             )
             self.calculated_results.append(
                 {
@@ -2458,6 +2489,10 @@ class TaxApp:
         self.lbl_summary.config(
             text=f"📊 Всего: {total} ТС | Налог: {total_tax:,.0f} ₽".replace(",", " ")
         )
+        if getattr(self, "lbl_legend", None) is not None:
+            self.lbl_legend.config(
+                text=f"🟢 поставлено в {self.tax_year}   🔴 списано в {self.tax_year}"
+            )
 
     def _vehicle_dialog(self, title, initial=None):
         dialog = tk.Toplevel(self.root)

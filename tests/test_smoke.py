@@ -33,6 +33,33 @@ check("_parse_date_to_datetime None", tax_app._parse_date_to_datetime("") is Non
 
 check("_db_date_to_ru", tax_app._db_date_to_ru("2026-03-15") == "15.03.2026")
 
+# --- подсветка статуса ---
+check("_date_year ISO", tax_app._date_year("2026-09-10") == 2026)
+check("_date_year RU", tax_app._date_year("15.03.2025") == 2025)
+check("_date_year пусто", tax_app._date_year("") is None)
+check(
+    "_status_tag списано в году",
+    tax_app._status_tag({"дата_списания": "2026-09-20"}, 2026) == "disp_year",
+)
+check(
+    "_status_tag поставлено в году",
+    tax_app._status_tag({"дата_постановки": "2026-03-15"}, 2026) == "reg_year",
+)
+check(
+    "_status_tag прочие годы без подсветки",
+    tax_app._status_tag(
+        {"дата_постановки": "2020-01-01", "дата_списания": "2024-01-01"}, 2026
+    )
+    == "",
+)
+check(
+    "_status_tag приоритет списания",
+    tax_app._status_tag(
+        {"дата_постановки": "2026-03-01", "дата_списания": "2026-09-01"}, 2026
+    )
+    == "disp_year",
+)
+
 # --- 2. Нормализация данных ---
 n = tax_app.DataNormalizer()
 check("мощность строка", n.normalize_power("150") == 150.0)
