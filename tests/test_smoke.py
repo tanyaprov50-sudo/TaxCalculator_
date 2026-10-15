@@ -380,6 +380,13 @@ check(
     _t1 == sum(_qt1.values()) and _t2 == sum(_qt2.values()) and _t3 == sum(_qt3.values()),
 )
 
+# ==================== 13. Парсер диапазонов ставок ====================
+print("\n--- 13. Парсер диапазонов ---")
+check("диапазон: 'от 100 до 150'", _loader._parse_range("от 100 до 150") == (100, 150))
+check("диапазон: 'до 100'", _loader._parse_range("до 100") == (0, 100))
+check("диапазон: 'свыше 200'", _loader._parse_range("свыше 200") == (200, float("inf")))
+check("диапазон: '100-150'", _loader._parse_range("100-150") == (100, 150))
+
 print()
 if FAILED:
     print(f"ПРОВАЛЕНО тестов: {len(FAILED)}: {', '.join(FAILED)}")

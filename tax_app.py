@@ -1040,6 +1040,9 @@ class AutoConfigLoader:
         text = text.lower()
         nums = list(map(int, re.findall(r"\d+", text)))
         if "до" in text:
+            # «до 100» -> (0, 100); «от 100 до 150» -> (100, 150)
+            if len(nums) >= 2:
+                return nums[0], nums[1]
             return (0, nums[0]) if nums else (None, None)
         elif "свыше" in text or "более" in text:
             return (nums[0], float("inf")) if nums else (None, None)
