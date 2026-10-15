@@ -21,6 +21,8 @@ import shutil
 import glob
 import sqlite3
 import zipfile
+import webbrowser
+import html as html_mod
 from contextlib import contextmanager
 
 
@@ -129,6 +131,140 @@ def build_data_zip(dest_path, data_dir):
         z.writestr("manifest.txt", "\n".join(manifest))
         names = z.namelist()
     return [n for n in names if n != "manifest.txt"]
+
+
+def build_accounting_report_html(organization, year, rows):
+    """HTML-справка для бухгалтерии: налог по ТС с разбивкой по кварталам.
+
+    Подходит для печати из браузера (Ctrl+P). `rows` — self.calculated_results.
+    """
+    def money(v):
+        try:
+            return f"{int(round(float(v))):,}".replace(",", " ")
+        except (TypeError, ValueError):
+            return "—"
+
+    def esc(v):
+        return html_mod.escape(str(v) if v is not None else "")
+
+    totals = [0, 0, 0, 0, 0]  # 1-4 квартал + итого
+    body = []
+    for r in rows:
+        q = [
+            r.get("налог_1кв", 0),
+            r.get("налог_2кв", 0),
+            r.get("налог_3кв", 0),
+            r.get("налог_4кв", 0),
+        ]
+        total = r.get("налог", 0)
+        for i in range(4):
+            totals[i] += q[i]
+        totals[4] += total
+        name = " ".join(str(r.get(k, "") or "") for k in ("марка", "модель")).strip()
+        body.append(
+            "<tr>"
+            f"<td>{esc(r.get('инв_номер', ''))}</td>"
+            f"<td>{esc(r.get('гос_номер', ''))}</td>"
+            f"<td class='name'>{esc(name)}</td>"
+            f"<td class='num'>{esc(r.get('мощность', ''))}</td>"
+            f"<td>{esc(r.get('тип_тс', ''))}</td>"
+            f"<td class='num'>{esc(r.get('ставка', ''))}</td>"
+            f"<td class='adj'>{esc(r.get('коэффициенты', ''))}</td>"
+            f"<td class='num'>{money(q[0])}</td>"
+            f"<td class='num'>{money(q[1])}</td>"
+            f"<td class='num'>{money(q[2])}</td>"
+            f"<td class='num'>{money(q[3])}</td>"
+            f"<td class='num total'>{money(total)}</td>"
+            "</tr>"
+        )
+
+    if not body:
+        body.append("<tr><td colspan='12' class='empty'>Нет данных для расчёта</td></tr>")
+
+    grand = (
+        "<tr class='grand'>"
+        "<td colspan='7'>ИТОГО</td>"
+        f"<td class='num'>{money(totals[0])}</td>"
+        f"<td class='num'>{money(totals[1])}</td>"
+        f"<td class='num'>{money(totals[2])}</td>"
+        f"<td class='num'>{money(totals[3])}</td>"
+        f"<td class='num'>{money(totals[4])}</td>"
+        "</tr>"
+    )
+
+    generated = datetime.now().strftime("%d.%m.%Y %H:%M")
+    org = esc(organization)
+    y = esc(year)
+
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Справка ТН {y} — {org}</title>
+<style>
+  @page {{ size: A4 landscape; margin: 10mm; }}
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: "Segoe UI", Arial, sans-serif; font-size: 12px; color: #111;
+         margin: 24px; }}
+  h1 {{ font-size: 17px; margin: 0 0 4px; }}
+  .meta {{ color: #444; font-size: 11px; margin-bottom: 12px; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  th, td {{ border: 1px solid #999; padding: 4px 6px; text-align: left; }}
+  thead th {{ background: #eaeaea; text-align: center; font-size: 11px; }}
+  td.num {{ text-align: right; white-space: nowrap; }}
+  td.name {{ white-space: nowrap; }}
+  td.adj {{ text-align: center; white-space: nowrap; }}
+  tbody tr:nth-child(even) {{ background: #f7f7f7; }}
+  tr.total, td.total {{ font-weight: bold; }}
+  tr.grand {{ background: #dfe7f5; font-weight: bold; }}
+  .sign {{ margin-top: 28px; width: 60%; display: flex; justify-content: space-between; }}
+  .sign div {{ flex: 1; border-top: 1px solid #111; text-align: center; font-size: 11px; }}
+  .note {{ margin-top: 14px; font-size: 11px; color: #444; }}
+  @media print {{ body {{ margin: 0; }} }}
+</style>
+</head>
+<body>
+  <h1>Справка о транспортном налоге за {y} год</h1>
+  <div class="meta">
+    Организация: <strong>{org}</strong> &nbsp;|&nbsp;
+    Сформировано: {generated} &nbsp;|&nbsp;
+    Платежей: {len(rows)}
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Инв. №</th>
+        <th>Гос. номер</th>
+        <th>Транспортное средство</th>
+        <th>Л.с.</th>
+        <th>Тип</th>
+        <th>Ставка</th>
+        <th>Коэф./Льгота</th>
+        <th>1 кв</th>
+        <th>2 кв</th>
+        <th>3 кв</th>
+        <th>4 кв</th>
+        <th>Итого ₽</th>
+      </tr>
+    </thead>
+    <tbody>
+      {"".join(body)}
+      {grand}
+    </tbody>
+  </table>
+  <div class="sign">
+    <div>Ответственное лицо</div>
+    <div>Бухгалтер</div>
+    <div>Руководитель</div>
+  </div>
+  <div class="note">
+    Расчёт: Мощность × Ставка × (Месяцы владения / 12), с учётом кварталов
+    постановки/списания. Коэффициент ×3 — ст. 362 НК РФ п. 2; льгота — закон субъекта РФ.
+    Печать: Ctrl+P, ориентация «альбомная».
+  </div>
+</body>
+</html>
+"""
 
 
 # === БАЗОВАЯ ПАПКА ПРОГРАММЫ ===
@@ -1699,6 +1835,7 @@ class TaxApp:
             ("💾 Сохранить расчёт", self.save_calculation, "#fff3e0"),
             ("📁 Импорт Excel", self.import_excel, "#fff3e0"),
             ("📤 Экспорт в Excel", self.export_excel, "#f3e5f5"),
+            ("🖨️ Справка бухгалтерии", self.export_accounting_report, "#f3e5f5"),
         ]:
             tk.Button(
                 top_row1, text=text, command=cmd, bg=bg, relief="flat", padx=8, pady=3
@@ -3071,6 +3208,43 @@ class TaxApp:
                 messagebox.showinfo("Успех", f"Экспорт завершён:\n{fp}")
             except Exception as e:
                 messagebox.showerror("Ошибка", str(e))
+
+    def export_accounting_report(self):
+        """Справка для бухгалтерии: HTML с разбивкой по кварталам (печать из браузера)."""
+        if not self.calculated_results:
+            messagebox.showwarning(
+                "Внимание", "Сначала выполните расчёт налога (кнопка «Рассчитать»)"
+            )
+            return
+        year = self.tax_year
+        org = (
+            self.org_name
+            if self.org_name and not self.is_summary
+            else "Сводный (все организации)"
+        )
+        safe = "".join(ch for ch in org if ch.isalnum() or ch in " _-").strip() or "Организация"
+        fp = filedialog.asksaveasfilename(
+            defaultextension=".html",
+            initialfile=f"Справка_ТН_{safe}_{year}.html",
+            filetypes=[("HTML-документ", "*.html"), ("Все файлы", "*.*")],
+        )
+        if not fp:
+            return
+        try:
+            html = build_accounting_report_html(
+                org, year, self.calculated_results
+            )
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write(html)
+            webbrowser.open("file:///" + os.path.abspath(fp).replace("\\", "/"))
+            messagebox.showinfo(
+                "Справка для бухгалтерии",
+                f"Сохранено: {fp}\n\n"
+                "Открыто в браузере — печать через Ctrl+P\n"
+                "(ориентация «альбомная», A4).",
+            )
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
 
     def _column_mapping_dialog(self, file_cols):
         """Диалог сопоставления колонок файла с полями базы"""
