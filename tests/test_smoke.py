@@ -170,6 +170,29 @@ r4 = app.get_rate_for_vehicle(
 )
 check("ставка: свыше 300 л.с.", r4 == 135, str(r4))
 
+# --- Сортировка по клику на заголовок ---
+app._sort_col = None
+app._sort_asc = True
+check("сортировка: число с пробелами", app._sort_value("итого", "1 234") == (0, 1234.0, ""))
+check("сортировка: прочерк в конец", app._sort_value("итого", "—") == (2, 0.0, ""))
+check("сортировка: пусто в конец", app._sort_value("ставка", "") == (2, 0.0, ""))
+check("сортировка: инв. номер по числу", app._sort_value("инв_номер", "45") == (0, 45.0, ""))
+check(
+    "сортировка: 45 < 123 как числа",
+    app._sort_value("инв_номер", "45") < app._sort_value("инв_номер", "123"),
+)
+check(
+    "сортировка: текст без регистра",
+    app._sort_value("марка", "LADA") == (0, 0.0, "lada"),
+)
+rows = ["1200", "350", "—", "9800", ""]
+keys = [app._sort_value("итого", r) for r in rows]
+check(
+    "сортировка: итоговый порядок",
+    [rows[i] for i in sorted(range(len(rows)), key=lambda i: keys[i])]
+    == ["350", "1200", "9800", "—", ""],
+)
+
 # --- 8. Экспорт данных в ZIP ---
 import tempfile  # noqa: E402
 import zipfile  # noqa: E402

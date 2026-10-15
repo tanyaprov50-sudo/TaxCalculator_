@@ -1381,6 +1381,10 @@ class TaxApp:
         self._auto_detect = False
         # Отчётный год (изменяется в UI через комбобокс «Год»)
         self.tax_year = datetime.now().year
+        # Сортировка таблицы по клику на заголовок
+        self._sort_col = None
+        self._sort_asc = True
+        self._col_texts = {}
 
         self.create_ui()
         self.auto_load_config()
@@ -1798,8 +1802,12 @@ class TaxApp:
         self.tree = ttk.Treeview(
             tf, columns=[c[0] for c in cols], show="headings", selectmode="extended"
         )
+        self._col_texts = {cid: ctxt for cid, ctxt, cw in cols}
         for cid, ctxt, cw in cols:
-            self.tree.heading(cid, text=ctxt)
+            # Сортировка по клику на заголовок
+            self.tree.heading(
+                cid, text=ctxt, command=lambda c=cid: self._sort_by_column(c)
+            )
             self.tree.column(
                 cid, width=cw, anchor="w" if cid in ("марка", "модель", "примечание") else "center",
                 stretch=True
@@ -1821,6 +1829,60 @@ class TaxApp:
         self.tree.bind("<Button-3>", self._on_tree_right_click)
         self.tree.bind("<Double-1>", lambda e: self.edit_vehicle())
         self.tree.bind("<Control-KeyPress>", self._on_tree_ctrl_key, add="+")
+
+    # --- Сортировка по клику на заголовок ---
+    _SORT_NUMERIC = {"id", "мощность", "год", "ставка", "1кв", "2кв", "3кв", "4кв", "итого"}
+
+    def _sort_by_column(self, col):
+        """Клик по заголовку: сортировка по колонке; повторный клик меняет направление."""
+        if self._sort_col == col:
+            self._sort_asc = not self._sort_asc
+        else:
+            self._sort_col = col
+            self._sort_asc = True
+        self._apply_sort()
+
+    def _sort_value(self, col, raw):
+        """Ключ сортировки: числа — как числа, инв./гос. номера с цифрами — по числу,
+        текст — без учёта регистра, пустые значения и прочерки — всегда в конец."""
+        text = str(raw).strip().replace(" ", "").replace("\u00a0", "")
+        if text in ("", "—", "-", "None", "nan"):
+            return (2, 0.0, "")  # пустые — в конец списка
+        if col in self._SORT_NUMERIC:
+            try:
+                return (0, float(text), "")
+            except ValueError:
+                return (1, 0.0, text.lower())
+        if text.isdigit():
+            return (0, float(text), "")
+        return (0, 0.0, text.lower())
+
+    def _apply_sort(self):
+        """Сортирует строки таблицы по выбранной колонке и обновляет стрелки."""
+        try:
+            cols = list(self.tree["columns"])
+        except Exception:
+            return
+        if self._sort_col in cols:
+            items = [
+                (
+                    self._sort_value(self._sort_col, self.tree.set(iid, self._sort_col)),
+                    iid,
+                )
+                for iid in self.tree.get_children()
+            ]
+            items.sort(key=lambda t: t[0], reverse=not self._sort_asc)
+            for pos, (_, iid) in enumerate(items):
+                self.tree.move(iid, "", pos)
+        self._update_headings()
+
+    def _update_headings(self):
+        """Показывает ▲/▼ в заголовке активной колонки сортировки."""
+        for cid in self.tree["columns"]:
+            base = self._col_texts.get(cid, str(cid))
+            if cid == self._sort_col:
+                base += " ▲" if self._sort_asc else " ▼"
+            self.tree.heading(cid, text=base)
 
     def _on_tree_right_click(self, event):
         """Запоминает ячейку под курсором и открывает меню."""
@@ -2516,6 +2578,7 @@ class TaxApp:
                     "статус": "списан" if is_disposed else "актив",
                 }
             )
+        self._apply_sort()
         self.update_summary()
 
     def filter_vehicles(self):
