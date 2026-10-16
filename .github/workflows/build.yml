@@ -24,9 +24,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Run tests
+        run: |
+          python tests/test_smoke.py
+
       - name: Build EXE with PyInstaller
         run: |
-          py -3.12 -m PyInstaller --clean tax_app.spec
+          python -m PyInstaller --clean tax_app.spec
 
       - name: Verify build
         run: |

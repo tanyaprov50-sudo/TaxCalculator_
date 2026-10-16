@@ -25,7 +25,14 @@ check("_parse_ru_date ДД.ММ.ГГГГ", tax_app._parse_ru_date("15.03.2026") 
 check("_parse_ru_date ДД-ММ-ГГГГ", tax_app._parse_ru_date("15-03-2026") == "2026-03-15")
 check("_parse_ru_date уже ISO", tax_app._parse_ru_date("2026-03-15") == "2026-03-15")
 check("_parse_ru_date пусто", tax_app._parse_ru_date("") == "")
-check("_parse_ru_date мусор не падает", tax_app._parse_ru_date("abc") == "abc")
+check("_parse_ru_date мусор -> пусто", tax_app._parse_ru_date("abc") == "")
+try:
+    tax_app._parse_ru_date_strict("abc", "Дата")
+    _strict_ok = False
+except ValueError:
+    _strict_ok = True
+check("_parse_ru_date_strict бросает на мусоре", _strict_ok)
+check("_parse_ru_date_strict пусто -> пусто", tax_app._parse_ru_date_strict("") == "")
 
 dt = tax_app._parse_date_to_datetime("15.03.2026")
 check("_parse_date_to_datetime ru", dt is not None and dt.day == 15 and dt.month == 3)
@@ -409,8 +416,14 @@ _rpt2 = tax_app.build_accounting_report_html("<ООО> & Ко", 2026, [])
 check("справка: HTML-экранирование", "&lt;ООО&gt; &amp; Ко" in _rpt2, "спецсимволы не экранированы")
 check("справка: пустые данные не падают", "Нет данных" in _rpt2)
 
-print()
-if FAILED:
-    print(f"ПРОВАЛЕНО тестов: {len(FAILED)}: {', '.join(FAILED)}")
-    sys.exit(1)
-print("Все тесты пройдены.")
+def test_smoke():
+    """Точка входа для pytest: проверяет, что все проверки выше прошли."""
+    assert not FAILED, f"Провалено тестов: {len(FAILED)}: {', '.join(FAILED)}"
+
+
+if __name__ == "__main__":
+    print()
+    if FAILED:
+        print(f"ПРОВАЛЕНО тестов: {len(FAILED)}: {', '.join(FAILED)}")
+        sys.exit(1)
+    print("Все тесты пройдены.")

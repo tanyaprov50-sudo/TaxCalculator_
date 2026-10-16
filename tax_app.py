@@ -292,7 +292,20 @@ def _parse_ru_date(s):
                 return dt.strftime("%Y-%m-%d")
             except (ValueError, IndexError):
                 pass
-    return s
+    # Не распознано — в БД пишем пусто, а не мусор
+    return ""
+
+
+def _parse_ru_date_strict(s, field="дата"):
+    """Как _parse_ru_date, но для непустой нераспознанной даты бросает ValueError."""
+    if not s or str(s).strip() == "":
+        return ""
+    parsed = _parse_ru_date(s)
+    if not parsed:
+        raise ValueError(
+            f"Неверный формат даты ({field}): {s!r}. Ожидается ДД.ММ.ГГГГ"
+        )
+    return parsed
 
 
 def _parse_date_to_datetime(s):
@@ -548,9 +561,16 @@ class VehicleDatabase:
                 conn.rollback()
                 raise e
         else:
-            conn = sqlite3.connect(self.DB_FILE)
+            conn = sqlite3.connect(self.DB_FILE, timeout=5.0)
             conn.row_factory = sqlite3.Row
             try:
+                # Устойчивость к параллельным запускам: ждать снятия блокировки,
+                # журнал WAL снижает вероятность «database is locked».
+                conn.execute("PRAGMA busy_timeout = 5000")
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL")
+                except sqlite3.DatabaseError:
+                    pass
                 yield conn
                 conn.commit()
             except Exception as e:
@@ -1642,6 +1662,20 @@ class TaxApp:
             self.db = VehicleDatabase(db_file)
             self.all_dbs = [self.db]
 
+        # Обратный маппинг «файл БД -> название организации» (для сводного режима)
+        self.org_files = {}
+        try:
+            orgs_path = _data_path("organizations.json")
+            if os.path.exists(orgs_path):
+                with open(orgs_path, "r", encoding="utf-8") as f:
+                    orgs = json.load(f)
+                if isinstance(orgs, dict):
+                    self.org_files = {
+                        os.path.basename(v): name for name, v in orgs.items()
+                    }
+        except Exception:
+            pass
+
         self.config_loader = AutoConfigLoader()
         self.rates = {}
         self.custom_rates = {}
@@ -1790,6 +1824,49 @@ class TaxApp:
         
         t.insert("end", "=" * 50 + "\n")
         t.insert("end", f"ИТОГО: {total_count} ТС; {total_tax:,.0f} руб.".replace(",", " "))
+
+    def show_org_totals(self):
+        """Итоги по организациям в сводном режиме (кол-во ТС и налог)."""
+        d = tk.Toplevel(self.root)
+        d.title(f"🏢 Итого по организациям за {self.tax_year} год")
+        d.geometry("640x480")
+
+        t = tk.Text(d, wrap="none", font=("Consolas", 10))
+        t.pack(fill="both", expand=True, padx=10, pady=10)
+
+        if not self.calculated_results:
+            t.insert("end", "Сначала выполните расчёт налога")
+            return
+
+        by_org = {}
+        for r in self.calculated_results:
+            org = r.get("организация") or self.org_name or "—"
+            if org not in by_org:
+                by_org[org] = {"count": 0, "налог": 0}
+            by_org[org]["count"] += 1
+            by_org[org]["налог"] += r.get("налог", 0)
+
+        t.insert("end", f"🏢 Итоги по организациям за {self.tax_year} год\n")
+        t.insert("end", "=" * 60 + "\n\n")
+
+        total_tax = 0
+        total_count = 0
+        for org, data in sorted(by_org.items()):
+            t.insert("end", f"• {org}\n")
+            t.insert("end", f"    ТС: {data['count']}\n")
+            t.insert(
+                "end",
+                f"    Налог: {data['налог']:,.0f} руб.\n\n".replace(",", " "),
+            )
+            total_tax += data["налог"]
+            total_count += data["count"]
+
+        t.insert("end", "=" * 60 + "\n")
+        t.insert(
+            "end",
+            f"ИТОГО: {len(by_org)} орг.; {total_count} ТС; "
+            f"{total_tax:,.0f} руб.".replace(",", " "),
+        )
 
     def show_change_log(self):
         """Показать журнал изменений"""
@@ -1983,6 +2060,10 @@ class TaxApp:
             ("статус", "Статус", 80),
         ]
 
+        # В сводном режиме показываем организацию-владельца
+        if self.is_summary:
+            self.base_cols.append(("организация", "Организация", 170))
+
         # Дополнительные колонки
         self.extra_cols = [
             ("дата_постановки", "Дата пост.", 110),
@@ -2063,6 +2144,11 @@ class TaxApp:
             bot, text="📦 Экспорт данных (ZIP)", command=self.export_all_data_zip,
             bg="#e0e8f0",
         ).pack(side="right", padx=5)
+        if self.is_summary:
+            tk.Button(
+                bot, text="🏢 Итого по организациям", command=self.show_org_totals,
+                bg="#e0f0e0",
+            ).pack(side="right", padx=5)
 
     def _create_tree(self):
         """Создаёт или пересоздаёт дерево с текущими колонками"""
@@ -2704,11 +2790,15 @@ class TaxApp:
         except (ValueError, KeyError, TypeError):
             return {1: 3, 2: 3, 3: 3, 4: 3}
 
-    def get_rate_for_vehicle(self, vehicle):
+    def _rate_match(self, vehicle):
+        """Возвращает (ставка, найдена). найдена=False, если мощность не попала ни в один диапазон."""
         hp = vehicle.get("мощность", 0)
         if not hp:
-            return 0
-        hp = float(hp)
+            return 0, False
+        try:
+            hp = float(hp)
+        except (ValueError, TypeError):
+            return 0, False
         vtype = vehicle.get("тип_тс", "легковые")
         year = vehicle.get("год_выпуска", 0)
 
@@ -2717,7 +2807,7 @@ class TaxApp:
         if custom_table:
             for (low, high), rate in custom_table.items():
                 if (low == 0 and hp <= high) or (low < hp <= high):
-                    return rate
+                    return rate, True
 
         # Проверяем ставки по возрасту (для легковых)
         rate_table = None
@@ -2744,13 +2834,25 @@ class TaxApp:
         # Ищем ставку в таблице
         for (low, high), rate in rate_table.items():
             if (low == 0 and hp <= high) or (low < hp <= high):
-                return rate
+                return rate, True
 
-        # Fallback: берём первую ставку из таблицы
-        if rate_table:
-            return next(iter(rate_table.values()))
+        # Мощность не попала ни в один диапазон — неверной ставки не подставляем
+        return 0, False
 
-        return 0
+    def get_rate_for_vehicle(self, vehicle):
+        return self._rate_match(vehicle)[0]
+
+    def _vehicle_org_name(self, v):
+        """Название организации-владельца ТС (в сводном режиме по файлу БД)."""
+        db = v.get("_db")
+        if db is None:
+            return self.org_name if not self.is_summary else ""
+        fname = os.path.basename(getattr(db, "DB_FILE", "") or "")
+        name = getattr(self, "org_files", {}).get(fname)
+        if name:
+            return name
+        # Фолбэк: имя файла без расширения
+        return os.path.splitext(fname)[0] or "—"
 
     def show_vehicles_table(self, vehicles):
         for item in self.tree.get_children():
@@ -2758,8 +2860,11 @@ class TaxApp:
         self.calculated_results = []
         self._row_vid = {}
         year = self.tax_year
+        unmatched = 0
         for _n, v in enumerate(vehicles, start=1):
-            rate = self.get_rate_for_vehicle(v)
+            rate, rate_found = self._rate_match(v)
+            if not rate_found and v.get("мощность"):
+                unmatched += 1
             quarter_months = self.get_quarter_months(v, year)
 
             # Нормализуем дату списания из БД (может быть datetime-объектом)
@@ -2824,6 +2929,11 @@ class TaxApp:
             if self.show_coeff_var.get():
                 values.insert(10, adjust_text)
 
+            # Организация-владелец (только в сводном режиме)
+            org_disp = self._vehicle_org_name(v) if self.is_summary else ""
+            if self.is_summary:
+                values.append(org_disp)
+
             # Добавляем дополнительные колонки если они включены
             if self.show_registration_var.get():
                 values.append(reg_date)
@@ -2864,10 +2974,17 @@ class TaxApp:
                     "налог": total_tax,
                     "год": year,
                     "статус": "списан" if is_disposed else "актив",
+                    "организация": org_disp,
                 }
             )
         self._apply_sort()
         self.update_summary()
+        if unmatched:
+            self.lbl_status.config(
+                text=f"⚠️ Нет ставки для {unmatched} ТС — мощность вне диапазонов "
+                     f"({self.tax_year}). Проверьте ставки (кнопка «Редактировать ставки»).",
+                fg="orange",
+            )
 
     def filter_vehicles(self):
         # Пересоздаём дерево с текущими настройками колонок
@@ -3062,9 +3179,13 @@ class TaxApp:
                     for k, v in entries.items()
                 }
                 data.update(self._read_extras(extras))
-                # Парсим даты в русском формате
-                data["дата_постановки"] = _parse_ru_date(data.get("дата_постановки", ""))
-                data["дата_списания"] = _parse_ru_date(data.get("дата_списания", ""))
+                # Парсим даты в русском формате (строгая проверка формата)
+                data["дата_постановки"] = _parse_ru_date_strict(
+                    data.get("дата_постановки", ""), "Дата постановки"
+                )
+                data["дата_списания"] = _parse_ru_date_strict(
+                    data.get("дата_списания", ""), "Дата списания"
+                )
                 if not data["мощность"] or not data["год_выпуска"]:
                     raise ValueError(
                         "Заполните обязательные поля: Мощность и Год выпуска"
