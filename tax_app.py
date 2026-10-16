@@ -1818,6 +1818,7 @@ class TaxApp:
         self.show_registration_var = tk.BooleanVar(value=False)
         self.show_disposal_var = tk.BooleanVar(value=False)
         self.show_notes_var = tk.BooleanVar(value=False)
+        self.show_coeff_var = tk.BooleanVar(value=False)
 
         # Верхняя панель
         top = tk.Frame(self.root, bg="#f0f0f0", pady=5)
@@ -1905,6 +1906,10 @@ class TaxApp:
             top_row2, text="Примечания", variable=self.show_notes_var,
             bg="#e8e8e8", selectcolor="#fff", command=self.filter_vehicles, font=("Segoe UI", 9)
         ).pack(side="left", padx=3)
+        tk.Checkbutton(
+            top_row2, text="Коэф./Льгота", variable=self.show_coeff_var,
+            bg="#e8e8e8", selectcolor="#fff", command=self.filter_vehicles, font=("Segoe UI", 9)
+        ).pack(side="left", padx=3)
 
         # Кнопка смены организации (справа)
         tk.Button(
@@ -1960,7 +1965,6 @@ class TaxApp:
             ("год", "Год", 55),
             ("тип_тс", "Тип", 90),
             ("ставка", "Ставка", 70),
-            ("коэф", "Коэф./Льгота", 100),
             ("1кв", "1 кв", 70),
             ("2кв", "2 кв", 70),
             ("3кв", "3 кв", 70),
@@ -1968,12 +1972,13 @@ class TaxApp:
             ("итого", "Итого ₽", 90),
             ("статус", "Статус", 80),
         ]
-        
+
         # Дополнительные колонки
         self.extra_cols = [
             ("дата_постановки", "Дата пост.", 110),
             ("дата_списания", "Дата спис.", 110),
             ("примечание", "Примечание", 150),
+            ("коэф", "Коэф./Льгота", 100),
         ]
         
         # Создаём tree (пересоздаётся при изменении видимых колонок)
@@ -2053,6 +2058,10 @@ class TaxApp:
         """Создаёт или пересоздаёт дерево с текущими колонками"""
         # Определяем видимые колонки
         cols = list(self.base_cols)
+        if self.show_coeff_var.get():
+            # Коэф./Льгота — сразу после ставки
+            idx = next((i for i, c in enumerate(cols) if c[0] == "ставка"), len(cols) - 1) + 1
+            cols.insert(idx, self.extra_cols[3])
         if self.show_registration_var.get():
             cols.append(self.extra_cols[0])
         if self.show_disposal_var.get():
@@ -2786,7 +2795,6 @@ class TaxApp:
                 v.get("год_выпуска", ""),
                 v.get("тип_тс", ""),
                 rate,
-                adjust_text,
                 fmt(quarter_taxes[1]),
                 fmt(quarter_taxes[2]),
                 fmt(quarter_taxes[3]),
@@ -2794,7 +2802,11 @@ class TaxApp:
                 fmt(total_tax),
                 "списан" if is_disposed else "актив",
             ]
-            
+
+            # Коэф./Льгота — сразу после ставки (как в _create_tree)
+            if self.show_coeff_var.get():
+                values.insert(10, adjust_text)
+
             # Добавляем дополнительные колонки если они включены
             if self.show_registration_var.get():
                 values.append(reg_date)
