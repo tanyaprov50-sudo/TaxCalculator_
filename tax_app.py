@@ -24,6 +24,8 @@ import zipfile
 import webbrowser
 import html as html_mod
 from contextlib import contextmanager
+from decimal import Decimal, ROUND_HALF_UP
+import logging
 
 
 # ============================================================================
@@ -140,7 +142,7 @@ def build_accounting_report_html(organization, year, rows):
     """
     def money(v):
         try:
-            return f"{int(round(float(v))):,}".replace(",", " ")
+            return f"{_round_money(float(v)):,}".replace(",", " ")
         except (TypeError, ValueError):
             return "—"
 
@@ -486,6 +488,28 @@ def format_adjustments(vehicle, k, kb):
     return " ".join(parts)
 
 
+logger = logging.getLogger(__name__)
+
+
+def _round_half_up(v, places=0):
+    """Округление «при 0,5 — вверх» с заданным числом знаков.
+
+    Обычный round() в Python округляет по банкским правилам
+    (1262.5 -> 1262), что для налога даёт на рубль меньше.
+    """
+    try:
+        q = Decimal(1).scaleb(-places)
+        d = Decimal(f"{float(v):.{places + 4}f}").quantize(q, rounding=ROUND_HALF_UP)
+        return int(d) if places == 0 else float(d)
+    except (TypeError, ValueError):
+        return 0 if places == 0 else 0.0
+
+
+def _round_money(v):
+    """Округление суммы до рублей «при 0,5 — вверх»."""
+    return _round_half_up(v, 0)
+
+
 def compute_vehicle_tax(vehicle, year, rate, quarter_months):
     """Единая точка расчёта налога на ТС за год.
 
@@ -500,7 +524,7 @@ def compute_vehicle_tax(vehicle, year, rate, quarter_months):
     power = vehicle["мощность"]
     k, kb = vehicle_adjustments(vehicle, year)
     total_months = sum(quarter_months.values())
-    total_tax = round(power * rate * total_months / 12 * k * kb)
+    total_tax = _round_money(power * rate * total_months / 12 * k * kb)
 
     raw = {q: power * rate * m / 12 * k * kb for q, m in quarter_months.items()}
     floored = {q: int(raw[q]) for q in raw}
@@ -526,6 +550,71 @@ def compute_vehicle_tax(vehicle, year, rate, quarter_months):
 
     total_tax = sum(quarter_taxes.values())
     return total_tax, quarter_taxes, k, kb
+
+
+# Журнал изменений: кто менял и сколько записей храним (ротация)
+CHANGE_LOG_LIMIT = 5000
+_LOG_USER = None
+
+
+def _current_user():
+    """Имя пользователя ОС для журнала изменений (раньше писалось «system»)."""
+    global _LOG_USER
+    if _LOG_USER is None:
+        user = ""
+        for getter in (
+            lambda: os.getlogin(),
+            lambda: os.environ.get("USERNAME"),
+            lambda: os.environ.get("USER"),
+        ):
+            try:
+                user = getter() or ""
+            except Exception:
+                user = ""
+            if user:
+                break
+        _LOG_USER = user or "system"
+    return _LOG_USER
+
+
+def _fmt_log_value(v):
+    """Читаемое значение для журнала: 100.0 -> «100», None -> «»."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "да" if v else "нет"
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
+
+def _diff_log(old_data, new_data):
+    """Читаемое описание изменившихся полей -> («было», «стало»)."""
+    keys = [
+        k
+        for k in new_data
+        if k not in old_data
+        or _fmt_log_value(old_data.get(k)) != _fmt_log_value(new_data.get(k))
+    ]
+    old_txt = "; ".join(f"{k}: {_fmt_log_value(old_data.get(k))}" for k in keys)
+    new_txt = "; ".join(f"{k}: {_fmt_log_value(new_data.get(k))}" for k in keys)
+    return old_txt, new_txt
+
+
+def _vehicle_label(vehicle):
+    """Краткая подпись ТС для журнала: «инв. № / гос. № / марка модель»."""
+    parts = [
+        p
+        for p in (
+            vehicle.get("инв_номер", ""),
+            vehicle.get("гос_номер", ""),
+            " ".join(
+                str(v) for v in (vehicle.get("марка", ""), vehicle.get("модель", "")) if v
+            ),
+        )
+        if p
+    ]
+    return " / ".join(str(p) for p in parts) or f"ID {vehicle.get('id', '')}"
 
 
 class VehicleDatabase:
@@ -604,6 +693,9 @@ class VehicleDatabase:
                 старое_значение TEXT, новое_значение TEXT,
                 пользователь TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_changelog_at ON change_log(created_at)"
+            )
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON vehicles(статус)")
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_gos_number ON vehicles(гос_номер)"
@@ -650,7 +742,16 @@ class VehicleDatabase:
                 ),
             )
             vehicle_id = cursor.lastrowid
-            self._log_change(conn, vehicle_id, "create", None, str(data))
+            desc = " ".join(
+                str(v)
+                for v in (
+                    data.get("инв_номер", ""),
+                    data.get("марка", ""),
+                    data.get("модель", ""),
+                )
+                if v
+            )
+            self._log_change(conn, vehicle_id, "create", "", desc or str(data))
             return vehicle_id
 
     # Белый список колонок, разрешённых для UPDATE
@@ -677,7 +778,9 @@ class VehicleDatabase:
             set_clause = ", ".join([f"{k} = ?" for k in set_columns]) + ", updated_at = CURRENT_TIMESTAMP"
             values = list(clean_data.values()) + [vehicle_id]
             cursor.execute(f"UPDATE vehicles SET {set_clause} WHERE id = ?", values)
-            self._log_change(conn, vehicle_id, "update", str(old_data), str(clean_data))
+            old_txt, new_txt = _diff_log(old_data, clean_data)
+            if old_txt:
+                self._log_change(conn, vehicle_id, "update", old_txt, new_txt)
 
     def delete_vehicle(self, vehicle_id, soft_delete=True):
         with self.get_connection() as conn:
@@ -687,9 +790,10 @@ class VehicleDatabase:
                     """UPDATE vehicles SET статус = 'disposed', дата_списания = ? WHERE id = ?""",
                     (datetime.now().strftime("%Y-%m-%d"), vehicle_id),
                 )
+                self._log_change(conn, vehicle_id, "dispose", "актив", "списан")
             else:
                 cursor.execute("DELETE FROM vehicles WHERE id = ?", (vehicle_id,))
-            self._log_change(conn, vehicle_id, "delete", "active", "disposed")
+                self._log_change(conn, vehicle_id, "delete", "в базе", "удалён")
 
     def get_all_vehicles(self, status="active"):
         with self.get_connection() as conn:
@@ -759,7 +863,13 @@ class VehicleDatabase:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO change_log (vehicle_id, действие, старое_значение, новое_значение, пользователь) VALUES (?, ?, ?, ?, ?)",
-            (vehicle_id, action, old_val, new_val, "system"),
+            (vehicle_id, action, old_val, new_val, _current_user()),
+        )
+        # Ротация: храним только последние CHANGE_LOG_LIMIT записей
+        cursor.execute(
+            "DELETE FROM change_log WHERE id NOT IN "
+            "(SELECT id FROM change_log ORDER BY id DESC LIMIT ?)",
+            (CHANGE_LOG_LIMIT,),
         )
 
     def export_to_excel(self, filename):
@@ -899,6 +1009,33 @@ class VehicleDatabase:
 # МОДУЛЬ 2: НОРМАЛИЗАЦИЯ ДАННЫХ
 # ============================================================================
 
+# Единый перечень типов ТС: используется в фильтрах, карточке ТС,
+# редакторе ставок и нормализаторе импорта. Ставки по этим типам
+# загружаются автоматически из кэша/сайта либо задаются вручную.
+VEHICLE_TYPES = [
+    "легковые",
+    "грузовые",
+    "автобусы",
+    "мотоциклы",
+    "спецтехника",
+    "снегоходы",
+    "катера",
+    "яхты",
+    "гидроциклы",
+]
+
+VEHICLE_TYPE_LABELS = {
+    "легковые": "Легковые автомобили",
+    "грузовые": "Грузовые автомобили",
+    "автобусы": "Автобусы",
+    "мотоциклы": "Мотоциклы",
+    "спецтехника": "Спецтехника",
+    "снегоходы": "Снегоходы",
+    "катера": "Катера",
+    "яхты": "Яхты",
+    "гидроциклы": "Гидроциклы",
+}
+
 
 class DataNormalizer:
     """Нормализация данных при импорте"""
@@ -921,6 +1058,14 @@ class DataNormalizer:
         "спец": "спецтехника",
         "трактор": "спецтехника",
         "погрузчик": "спецтехника",
+        "снегоход": "снегоходы",
+        "snowmobile": "снегоходы",
+        "катер": "катера",
+        "boat": "катера",
+        "яхт": "яхты",
+        "yacht": "яхты",
+        "гидроцикл": "гидроциклы",
+        "jetski": "гидроциклы",
     }
 
     @staticmethod
@@ -953,11 +1098,7 @@ class DataNormalizer:
         for key, vtype in DataNormalizer.TYPE_MAPPING.items():
             if key in val:
                 return vtype
-        return (
-            val
-            if val in ["легковые", "грузовые", "автобусы", "мотоциклы", "спецтехника"]
-            else "легковые"
-        )
+        return val if val in VEHICLE_TYPES else "легковые"
 
     @staticmethod
     def normalize_power(value):
@@ -972,33 +1113,19 @@ class DataNormalizer:
                 return None
             # Переводим кВт в л.с.
             if is_kwt:
-                hp = round(hp * 1.3596, 2)
+                hp = _round_half_up(hp * 1.3596, 2)
             return hp
         except (ValueError, AttributeError):
             return None
             # Переводим кВт в л.с.
             if is_kwt:
-                hp = round(hp * 1.3596, 2)
+                hp = _round_half_up(hp * 1.3596, 2)
             return hp
         except (ValueError, AttributeError):
             return None
             # Переводим кВт в л.с.
             if is_kwt:
-                hp = round(hp * 1.3596, 2)
-            return hp
-        except (ValueError, AttributeError):
-            return None
-            s = str(value).replace(",", ".").strip().lower()
-            # Определяем единицу измерения
-            is_kwt = "квт" in s or "kw" in s or "квт" in s
-            # Убираем единицы измерения
-            s = re.sub(r"[^\d.]", "", s)
-            hp = float(s)
-            if hp <= 0 or hp >= 3000:
-                return None
-            # Переводим кВт в л.с.
-            if is_kwt:
-                hp = round(hp * 1.3596, 2)
+                hp = _round_half_up(hp * 1.3596, 2)
             return hp
         except (ValueError, AttributeError):
             return None
@@ -1012,7 +1139,21 @@ class DataNormalizer:
                 return None
             # Переводим кВт в л.с.
             if is_kwt:
-                hp = round(hp * 1.3596, 2)
+                hp = _round_half_up(hp * 1.3596, 2)
+            return hp
+        except (ValueError, AttributeError):
+            return None
+            s = str(value).replace(",", ".").strip().lower()
+            # Определяем единицу измерения
+            is_kwt = "квт" in s or "kw" in s or "квт" in s
+            # Убираем единицы измерения
+            s = re.sub(r"[^\d.]", "", s)
+            hp = float(s)
+            if hp <= 0 or hp >= 3000:
+                return None
+            # Переводим кВт в л.с.
+            if is_kwt:
+                hp = _round_half_up(hp * 1.3596, 2)
             return hp
         except (ValueError, AttributeError):
             return None
@@ -1169,6 +1310,10 @@ class AutoConfigLoader:
                 ("автобусы", ["автобусы"]),
                 ("мотоциклы", ["мотоциклы"]),
                 ("спецтехника", ["трактор", "спецтехника"]),
+                ("снегоходы", ["снегоход"]),
+                ("катера", ["катер"]),
+                ("яхты", ["яхт"]),
+                ("гидроциклы", ["гидроцикл"]),
             ]:
                 if any(k in text for k in kws):
                     vtype = t
@@ -1681,6 +1826,8 @@ class TaxApp:
         self.custom_rates = {}
         self.current_vehicles = []
         self.calculated_results = []
+        # Окно закрыто/переоткрыто — откладываемые UI-вызовы игнорируются
+        self._closed = False
         self._auto_detect = False
         # Отчётный год (изменяется в UI через комбобокс «Год»)
         self.tax_year = datetime.now().year
@@ -1696,13 +1843,52 @@ class TaxApp:
     def _on_close(self):
         """Обработка закрытия окна"""
         if messagebox.askokcancel("Выход", "Вы уверены, что хотите выйти?"):
+            self._closed = True
             self.root.destroy()
 
+    def _ui(self, fn):
+        """Отложенный вызов в потоке Tk.
+
+        Игнорируется, если окно уже закрыто или переоткрыто (например,
+        при смене организации), а ошибки уничтоженных виджетов глушатся.
+        """
+        if self._closed:
+            return
+
+        def _run():
+            if self._closed:
+                return
+            try:
+                fn()
+            except tk.TclError:
+                pass
+
+        try:
+            self.root.after(0, _run)
+        except (RuntimeError, tk.TclError):
+            pass
+
     def switch_org(self):
-        """Смена организации"""
-        if messagebox.askyesno("Смена организации", "Сменить организацию? Текущие данные будут закрыты."):
+        """Смена организации — без пересоздания Tk и вложенного mainloop"""
+        if not messagebox.askyesno(
+            "Смена организации", "Сменить организацию? Текущие данные будут закрыты."
+        ):
+            return
+
+        # Закрываем текущее приложение: снимаем callback закрытия и виджеты
+        self._closed = True
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        self.root.withdraw()
+        self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
+
+        selector = OrgSelector(self.root)
+        if not selector.selected_org:
             self.root.destroy()
-            main()
+            return
+
+        self.root.deiconify()
+        TaxApp(self.root, selector.selected_org, selector.selected_db)
 
     def show_tax_history(self):
         """Показать историю налога для выбранного ТС"""
@@ -1872,21 +2058,44 @@ class TaxApp:
         """Показать журнал изменений"""
         d = tk.Toplevel(self.root)
         d.title("📋 Журнал изменений (30 дней)")
-        d.geometry("700x450")
-        
+        d.geometry("880x540")
+
         t = tk.Text(d, wrap="none", font=("Consolas", 9))
         t.pack(fill="both", expand=True, padx=10, pady=10)
-        
+
         try:
             from datetime import timedelta
             date_30_days_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
             changes = self.db.get_changes_since(date_30_days_ago)
-            
+
             if not changes:
                 t.insert("end", "Изменений за последние 30 дней нет")
-            else:
-                for c in changes:
-                    t.insert("end", f"{c['created_at']} | {c['действие']} | ТС ID {c['vehicle_id']}\n")
+                return
+
+            # Подписи ТС для журнала (активные + списанные)
+            labels = {}
+            for status in ("active", "disposed"):
+                try:
+                    for veh in self.db.get_all_vehicles(status=status):
+                        labels[veh["id"]] = _vehicle_label(veh)
+                except Exception:
+                    pass
+
+            for c in changes:
+                vid = c.get("vehicle_id")
+                label = labels.get(vid, f"ID {vid}")
+                user = c.get("пользователь") or "—"
+                t.insert(
+                    "end",
+                    f"{c['created_at']}  |  {c['действие']}  |  {label}  |  {user}\n",
+                )
+                old = str(c.get("старое_значение") or "").strip()
+                new = str(c.get("новое_значение") or "").strip()
+                if old:
+                    t.insert("end", f"    было : {old}\n")
+                if new:
+                    t.insert("end", f"    стало: {new}\n")
+                t.insert("end", "\n")
         except Exception as e:
             t.insert("end", f"Ошибка: {e}")
 
@@ -2014,14 +2223,7 @@ class TaxApp:
         tk.Label(flt, text="Тип:", bg="#fafafa").pack(side="left", padx=(20, 5))
         self.type_filter = ttk.Combobox(
             flt,
-            values=[
-                "Все",
-                "легковые",
-                "грузовые",
-                "автобусы",
-                "мотоциклы",
-                "спецтехника",
-            ],
+            values=["Все"] + VEHICLE_TYPES,
             state="readonly",
             width=12,
         )
@@ -2329,14 +2531,13 @@ class TaxApp:
             self.custom_rates = self._load_custom_rates("custom_rates.json")
 
             text = f"✅ {msg} | {self.config_loader.source_name}"
-            self.root.after(
-                0,
+            self._ui(
                 lambda: [
                     self.lbl_status.config(
                         text=text, fg="green" if success else "orange"
                     ),
                     self.filter_vehicles(),
-                ],
+                ]
             )
 
         threading.Thread(target=thread, daemon=True).start()
@@ -2362,14 +2563,13 @@ class TaxApp:
                 if success
                 else f"⚠️ Используются встроенные ставки ({region})"
             )
-            self.root.after(
-                0,
+            self._ui(
                 lambda: [
                     self.lbl_status.config(
                         text=text, fg="green" if success else "orange"
                     ),
                     self.filter_vehicles(),
-                ],
+                ]
             )
 
         threading.Thread(target=thread, daemon=True).start()
@@ -2400,15 +2600,14 @@ class TaxApp:
             self.custom_rates = self._load_custom_rates("custom_rates.json")
 
             text = f"✅ {msg}" if success else f"⚠️ {msg}"
-            self.root.after(
-                0,
+            self._ui(
                 lambda: [
                     self.lbl_status.config(
                         text=text, fg="green" if success else "orange"
                     ),
                     messagebox.showinfo("Ставки", text),
                     self.filter_vehicles(),
-                ],
+                ]
             )
 
         threading.Thread(target=thread, daemon=True).start()
@@ -2604,13 +2803,7 @@ class TaxApp:
             )
 
         # Создаем вкладки для каждого типа ТС
-        vehicle_types = [
-            ("легковые", "Легковые автомобили"),
-            ("грузовые", "Грузовые автомобили"),
-            ("автобусы", "Автобусы"),
-            ("мотоциклы", "Мотоциклы"),
-            ("спецтехника", "Спецтехника"),
-        ]
+        vehicle_types = [(vtype, VEHICLE_TYPE_LABELS[vtype]) for vtype in VEHICLE_TYPES]
 
         for vtype, display_name in vehicle_types:
             create_vehicle_type_tab(vtype, display_name, custom_rates)
@@ -2679,7 +2872,7 @@ class TaxApp:
                             result[vtype][key_tuple] = rate
                     return result
             except (OSError, json.JSONDecodeError, ValueError) as e:
-                print(f"Error loading custom rates: {e}")
+                logger.warning("Не удалось загрузить пользовательские ставки: %s", e)
         return {}
 
     def _save_custom_rates(self, filename, rates):
@@ -3050,13 +3243,7 @@ class TaxApp:
             if key == "тип_тс":
                 entries[key] = ttk.Combobox(
                     dialog,
-                    values=[
-                        "легковые",
-                        "грузовые",
-                        "автобусы",
-                        "мотоциклы",
-                        "спецтехника",
-                    ],
+                    values=list(VEHICLE_TYPES),
                     width=55,
                     state="readonly",
                 )

@@ -77,6 +77,22 @@ check("мощность вне диапазона", n.normalize_power("5000") is
 check("тип: грузовой", n.normalize_vehicle_type("ГРУЗОВОЙ бортовой") == "грузовые")
 check("тип: неизвестный", n.normalize_vehicle_type("квадроцикл") == "легковые")
 check("тип: спецтехника", n.normalize_vehicle_type("трактор МТЗ") == "спецтехника")
+check("тип: снегоход", n.normalize_vehicle_type("Снегоход Буран") == "снегоходы")
+check("тип: катер", n.normalize_vehicle_type("катер Прогресс") == "катера")
+check("тип: яхта", n.normalize_vehicle_type("яхта") == "яхты")
+check("тип: гидроцикл", n.normalize_vehicle_type("гидроцикл Yamaha") == "гидроциклы")
+check("тип: точное имя", n.normalize_vehicle_type("ГИДРОЦИКЛЫ") == "гидроциклы")
+check(
+    "перечень типов полон",
+    len(tax_app.VEHICLE_TYPES) >= 9
+    and all(t in tax_app.VEHICLE_TYPES for t in (
+        "снегоходы", "катера", "яхты", "гидроциклы")),
+    f"{tax_app.VEHICLE_TYPES}",
+)
+check(
+    "подписи есть для всех типов",
+    all(t in tax_app.VEHICLE_TYPE_LABELS for t in tax_app.VEHICLE_TYPES),
+)
 
 # --- 3. Парсер диапазонов ставок ---
 ac = tax_app.AutoConfigLoader()
@@ -138,6 +154,16 @@ app.custom_rates = {}
 app.config_loader = tax_app.AutoConfigLoader()
 app.config_loader._load_fallback_rates("Пермский край")
 app.rates = app.config_loader.rates
+
+check(
+    "ставки по всем типам (Пермский край)",
+    all(t in app.rates for t in tax_app.VEHICLE_TYPES),
+    f"нет ставок: {[t for t in tax_app.VEHICLE_TYPES if t not in app.rates]}",
+)
+_rm = app._rate_match({"мощность": 45, "тип_тс": "снегоходы", "год_выпуска": 2020})
+check("ставка снегохода найдена", _rm[1] is True and _rm[0] > 0, str(_rm))
+_rm2 = app._rate_match({"мощность": 70, "тип_тс": "яхты", "год_выпуска": 2020})
+check("ставка яхты найдена", _rm2[1] is True and _rm2[0] > 0, str(_rm2))
 
 qm = app.get_quarter_months({"дата_постановки": "15.03.2026", "дата_списания": ""}, 2026)
 # Март — это I квартал; владение с марта по декабрь = 10 месяцев
@@ -415,6 +441,78 @@ check("справка: 1 квартал 100", "100" in _rpt)
 _rpt2 = tax_app.build_accounting_report_html("<ООО> & Ко", 2026, [])
 check("справка: HTML-экранирование", "&lt;ООО&gt; &amp; Ко" in _rpt2, "спецсимволы не экранированы")
 check("справка: пустые данные не падают", "Нет данных" in _rpt2)
+
+# ==================== 15. Журнал изменений ====================
+print("\n--- 15. Журнал изменений ---")
+_db_log = tax_app.VehicleDatabase(":memory:")
+_log_id = _db_log.add_vehicle({
+    "мощность": 100, "год_выпуска": 2020, "тип_тс": "легковые",
+    "инв_номер": "9001", "марка": "LADA", "модель": "Granta",
+})
+_all = _db_log.get_changes_since("1970-01-01")
+check("журнал: запись о создании", len(_all) >= 1, str(len(_all)))
+check("журнал: пользователь не 'system'", _all[0]["пользователь"] != "", str(_all[0]))
+check(
+    "журнал: подпись при создании",
+    "9001" in str(_all[0]["новое_значение"]) and "LADA" in str(_all[0]["новое_значение"]),
+    str(_all[0]["новое_значение"]),
+)
+
+_db_log.update_vehicle(_log_id, {"мощность": 106})
+_upd = [c for c in _db_log.get_changes_since("1970-01-01") if c["действие"] == "update"]
+check(
+    "журнал: update — было/стало по полям",
+    len(_upd) == 1
+    and _upd[0]["старое_значение"] == "мощность: 100"
+    and _upd[0]["новое_значение"] == "мощность: 106",
+    str(_upd),
+)
+
+_db_log.update_vehicle(_log_id, {"мощность": 106})
+_upd2 = [c for c in _db_log.get_changes_since("1970-01-01") if c["действие"] == "update"]
+check("журнал: без реальных изменений не пишем", len(_upd2) == 1, str(len(_upd2)))
+
+# Ротация: при превышении лимита старые записи удаляются
+_orig_limit = tax_app.CHANGE_LOG_LIMIT
+tax_app.CHANGE_LOG_LIMIT = 5
+for i in range(12):
+    with _db_log.get_connection() as _c:
+        _db_log._log_change(_c, _log_id, "test", str(i), str(i))
+_rows = len(_db_log.get_changes_since("1970-01-01"))
+tax_app.CHANGE_LOG_LIMIT = _orig_limit
+check("журнал: ротация (лимит 5)", _rows <= 5, f"строк: {_rows}")
+
+check(
+    "дифф: нет изменений",
+    tax_app._diff_log({"мощность": 100}, {"мощность": 100}) == ("", ""),
+)
+check(
+    "подпись ТС для журнала",
+    tax_app._vehicle_label(
+        {"инв_номер": "4101", "гос_номер": "К123", "марка": "ПАЗ", "модель": "3204"}
+    )
+    == "4101 / К123 / ПАЗ 3204",
+)
+
+# ==================== 16. Округление (не банковское) ====================
+print("\n--- 16. Округление ---")
+check("округление: 1262.5 -> 1263 (не 1262)", tax_app._round_money(1262.5) == 1263,
+      str(tax_app._round_money(1262.5)))
+check("округление: 1261.5 -> 1262", tax_app._round_money(1261.5) == 1262,
+      str(tax_app._round_money(1261.5)))
+check("округление: 1262.4 -> 1262", tax_app._round_money(1262.4) == 1262)
+check("округление: целое не меняется", tax_app._round_money(2500) == 2500)
+check("округление: 2 знака 135.955 -> 135.96", tax_app._round_half_up(135.955, 2) == 135.96,
+      str(tax_app._round_half_up(135.955, 2)))
+
+# 101 л.с. × 25 ₽ × 6/12 = 1262.5 → по НК округляется до 1263
+_tax16, _q16, _, _ = tax_app.compute_vehicle_tax(
+    {"мощность": 101, "тип_тс": "легковые", "год_выпуска": 2020},
+    2026, 25, {1: 3, 2: 3, 3: 0, 4: 0},
+)
+check("формула: половина рубля вверх", _tax16 == 1263, str(_tax16))
+check("формула: кварталы дают итог", sum(_q16.values()) == _tax16, str(_q16))
+
 
 def test_smoke():
     """Точка входа для pytest: проверяет, что все проверки выше прошли."""
