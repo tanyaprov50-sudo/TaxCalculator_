@@ -1819,6 +1819,8 @@ class TaxApp:
         self.show_disposal_var = tk.BooleanVar(value=False)
         self.show_notes_var = tk.BooleanVar(value=False)
         self.show_coeff_var = tk.BooleanVar(value=False)
+        # Скрывать ТС, списанные в годах раньше отчётного (по умолчанию включено)
+        self.hide_old_disposed_var = tk.BooleanVar(value=True)
 
         # Верхняя панель
         top = tk.Frame(self.root, bg="#f0f0f0", pady=5)
@@ -1866,7 +1868,7 @@ class TaxApp:
         self.year_cb = ttk.Combobox(
             top_row1,
             textvariable=self.year_var,
-            values=[str(y) for y in range(datetime.now().year - 2, datetime.now().year + 2)],
+            values=[str(y) for y in range(datetime.now().year - 2, 2036)],
             width=6,
             state="readonly",
         )
@@ -1947,6 +1949,12 @@ class TaxApp:
         self.type_filter.set("Все")
         self.type_filter.bind("<<ComboboxSelected>>", lambda *a: self.filter_vehicles())
         self.type_filter.pack(side="left", padx=5)
+        tk.Checkbutton(
+            flt, text="Скрывать списанные в прошлых годах",
+            variable=self.hide_old_disposed_var,
+            bg="#fafafa", selectcolor="#fff", font=("Segoe UI", 9),
+            command=self.filter_vehicles,
+        ).pack(side="right", padx=8)
 
         # Таблица
         tf = tk.Frame(self.root)
@@ -2233,7 +2241,7 @@ class TaxApp:
                     self.lbl_status.config(
                         text=text, fg="green" if success else "orange"
                     ),
-                    self.show_vehicles_table(self.current_vehicles),
+                    self.filter_vehicles(),
                 ],
             )
 
@@ -2266,7 +2274,7 @@ class TaxApp:
                     self.lbl_status.config(
                         text=text, fg="green" if success else "orange"
                     ),
-                    self.show_vehicles_table(self.current_vehicles),
+                    self.filter_vehicles(),
                 ],
             )
 
@@ -2279,7 +2287,7 @@ class TaxApp:
         except (ValueError, TypeError):
             return
         self.lbl_status.config(text=f"📅 Отчётный год: {self.tax_year}", fg="blue")
-        self.show_vehicles_table(self.current_vehicles)
+        self.filter_vehicles()
 
     def update_config(self):
         region = self.region_var.get()
@@ -2305,7 +2313,7 @@ class TaxApp:
                         text=text, fg="green" if success else "orange"
                     ),
                     messagebox.showinfo("Ставки", text),
-                    self.show_vehicles_table(self.current_vehicles),
+                    self.filter_vehicles(),
                 ],
             )
 
@@ -2523,7 +2531,7 @@ class TaxApp:
             # Применяем изменения
             self.custom_rates = custom_rates
             # Обновляем отображение
-            self.show_vehicles_table(self.current_vehicles)
+            self.filter_vehicles()
             messagebox.showinfo("Успех", "Ставки сохранены и применены")
             dialog.destroy()
 
@@ -2535,7 +2543,7 @@ class TaxApp:
                     os.remove(custom_rates_file)
                 self.custom_rates = {}
                 dialog.destroy()
-                self.show_vehicles_table(self.current_vehicles)
+                self.filter_vehicles()
 
         ttk.Button(btn_frame, text="💾 Сохранить изменения", command=save_changes).pack(
             side="left", padx=10
@@ -2611,7 +2619,7 @@ class TaxApp:
                 self.current_vehicles.extend(vehicles)
         else:
             self.current_vehicles = self.db.get_all_vehicles(status="active")
-        self.show_vehicles_table(self.current_vehicles)
+        self.filter_vehicles()
 
     def get_ownership_months(self, vehicle, tax_year=None):
         """Считает количество полных месяцев владения в налоговом году"""
@@ -2855,6 +2863,7 @@ class TaxApp:
         
         s = self.search_var.get().lower()
         vt = self.type_filter.get()
+        hide_old_disposed = self.hide_old_disposed_var.get()
         filtered = [
             v
             for v in self.current_vehicles
@@ -2867,6 +2876,10 @@ class TaxApp:
                 or s in str(v.get("модель", "")).lower()
             )
             and (vt == "Все" or v.get("тип_тс") == vt)
+            and not (
+                hide_old_disposed
+                and (_date_year(v.get("дата_списания", "")) or 9999) < self.tax_year
+            )
         ]
         self.show_vehicles_table(filtered)
 
@@ -3169,7 +3182,7 @@ class TaxApp:
                     "статус": "списан" if is_disposed else "актив",
                 }
             )
-        self.show_vehicles_table(self.current_vehicles)
+        self.filter_vehicles()
         total = sum(r["налог"] for r in self.calculated_results)
         messagebox.showinfo(
             "Расчёт завершён",
