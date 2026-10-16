@@ -1676,7 +1676,7 @@ class TaxApp:
         if not sel:
             messagebox.showwarning("Внимание", "Выберите ТС")
             return
-        vid = self.tree.item(sel[0])["values"][0]
+        vid = self._row_vid.get(sel[0], self.tree.item(sel[0])["values"][0])
         vehicle = self.db.get_vehicle_by_id(vid)
         if not vehicle:
             return
@@ -1821,6 +1821,8 @@ class TaxApp:
         self.show_coeff_var = tk.BooleanVar(value=False)
         # Скрывать ТС, списанные в годах раньше отчётного (по умолчанию включено)
         self.hide_old_disposed_var = tk.BooleanVar(value=True)
+        # Соответствие строки таблицы (iid) реальному ID ТС в БД
+        self._row_vid = {}
 
         # Верхняя панель
         top = tk.Frame(self.root, bg="#f0f0f0", pady=5)
@@ -1963,7 +1965,7 @@ class TaxApp:
         
         # Базовые колонки
         self.base_cols = [
-            ("id", "ID", 40),
+            ("id", "№", 40),
             ("инв_номер", "Инв. №", 80),
             ("гос_номер", "Гос. номер", 100),
             ("vin", "VIN", 100),
@@ -2165,7 +2167,13 @@ class TaxApp:
             items.sort(key=lambda t: t[0], reverse=not self._sort_asc)
             for pos, (_, iid) in enumerate(items):
                 self.tree.move(iid, "", pos)
+        self._renumber_rows()
         self._update_headings()
+
+    def _renumber_rows(self):
+        """Нумерует строки таблицы по порядку (1..N) в колонке «№»."""
+        for pos, iid in enumerate(self.tree.get_children(), start=1):
+            self.tree.set(iid, "id", pos)
 
     def _update_headings(self):
         """Показывает ▲/▼ в заголовке активной колонки сортировки."""
@@ -2748,8 +2756,9 @@ class TaxApp:
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.calculated_results = []
+        self._row_vid = {}
         year = self.tax_year
-        for v in vehicles:
+        for _n, v in enumerate(vehicles, start=1):
             rate = self.get_rate_for_vehicle(v)
             quarter_months = self.get_quarter_months(v, year)
 
@@ -2793,7 +2802,7 @@ class TaxApp:
 
             # Базовые значения
             values = [
-                v["id"],
+                _n,
                 v.get("инв_номер", ""),
                 v.get("гос_номер", ""),
                 v.get("vin", ""),
@@ -2823,9 +2832,12 @@ class TaxApp:
             if self.show_notes_var.get():
                 values.append(v.get("примечание", ""))
 
+            iid = f"r{_n}"
+            self._row_vid[iid] = v["id"]
             self.tree.insert(
                 "",
                 "end",
+                iid=iid,
                 values=values,
                 tags=(row_tag,) if row_tag else (),
             )
@@ -2884,15 +2896,8 @@ class TaxApp:
         self.show_vehicles_table(filtered)
 
     def update_summary(self):
-        total = len(self.current_vehicles)
-        total_tax = 0
-        for v in self.current_vehicles:
-            rate = self.get_rate_for_vehicle(v)
-            quarter_months = self.get_quarter_months(v, self.tax_year)
-            tax_v, _quarter_taxes, _k, _kb = compute_vehicle_tax(
-                v, self.tax_year, rate, quarter_months
-            )
-            total_tax += tax_v
+        total = len(self.calculated_results)
+        total_tax = sum(r.get("налог", 0) for r in self.calculated_results)
         self.lbl_summary.config(
             text=f"📊 Всего: {total} ТС | Налог: {total_tax:,.0f} ₽".replace(",", " ")
         )
@@ -3085,7 +3090,7 @@ class TaxApp:
         if not sel:
             messagebox.showwarning("Внимание", "Выберите ТС")
             return
-        vid = self.tree.item(sel[0])["values"][0]
+        vid = self._row_vid.get(sel[0], self.tree.item(sel[0])["values"][0])
         vehicle = self.db.get_vehicle_by_id(vid)
         if not vehicle:
             return
@@ -3120,7 +3125,7 @@ class TaxApp:
         if not sel:
             return
         if messagebox.askyesno("Списание", "Списать выбранное ТС в архив?"):
-            vid = self.tree.item(sel[0])["values"][0]
+            vid = self._row_vid.get(sel[0], self.tree.item(sel[0])["values"][0])
             self.db.delete_vehicle(vid, soft_delete=True)
             self.load_vehicles_from_db()
 
@@ -3129,7 +3134,7 @@ class TaxApp:
         if not sel:
             return
         if messagebox.askyesno("Удаление", "⚠️ Удалить ТС БЕЗВОЗВРАТНО?"):
-            vid = self.tree.item(sel[0])["values"][0]
+            vid = self._row_vid.get(sel[0], self.tree.item(sel[0])["values"][0])
             self.db.delete_vehicle(vid, soft_delete=False)
             self.load_vehicles_from_db()
 
